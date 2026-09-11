@@ -34,7 +34,9 @@ def _read_workspace_identity(paths: WorkspacePaths) -> _HelperWorkspace:
     meaningful for the systemd unit.
     """
 
-    database_uri = f"file:{paths.database}?mode=ro"
+    # ``immutable`` prevents SQLite from trying to create a WAL shared-memory
+    # file while the systemd sandbox keeps the workspace read-only.
+    database_uri = f"file:{paths.database}?mode=ro&immutable=1"
     with sqlite3.connect(database_uri, uri=True) as connection:
         row = connection.execute("SELECT id FROM labs LIMIT 1").fetchone()
     if row is None or not isinstance(row[0], int):
