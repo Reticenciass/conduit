@@ -244,7 +244,7 @@ e `loot` nunca são removidos pela retenção.
 
 ### Forwards legados
 
-Desde a migração do schema 32, mantida no schema 33, um forward novo persiste `command_argv_json`
+Desde a migração do schema 32, mantida no schema 34, um forward novo persiste `command_argv_json`
 e o motor chama o executável diretamente com essa lista de argumentos, sem shell. Forwards migrados de versões anteriores
 mantêm o texto original para auditoria, mas não são executados automaticamente; recrie o plano
 pela interface ou pela CLI depois de revisar destino, porta, transporte e local de execução.

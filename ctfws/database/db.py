@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 
 class Database:
@@ -948,6 +948,18 @@ class Database:
                         connection.execute(f"ALTER TABLE {table} ADD COLUMN engine_id TEXT")
                 connection.execute("INSERT INTO schema_version(version) VALUES (33)")
                 current = 33
+
+            if current < 34:
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(workspace_tasks)").fetchall()
+                }
+                if "idempotency_hash" not in columns:
+                    connection.execute(
+                        "ALTER TABLE workspace_tasks ADD COLUMN idempotency_hash TEXT"
+                    )
+                connection.execute("INSERT INTO schema_version(version) VALUES (34)")
+                current = 34
 
             if current > SCHEMA_VERSION:
                 raise RuntimeError(

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from ctfws.core.paths import WorkspacePaths
-from ctfws.database.db import Database
+from ctfws.database.db import SCHEMA_VERSION, Database
 from ctfws.database.repositories import ContextRepository, HostRepository, LabRepository
 from ctfws.models.context import ContextTransport, NetworkContextCreate
 from ctfws.models.host import HostCreate
@@ -45,7 +45,7 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
         "audit_log",
         "workspace_memberships",
     }.issubset(tables)
-    assert version["version"] == 33
+    assert version["version"] == SCHEMA_VERSION
     with database.connection() as connection:
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(forwards)").fetchall()
@@ -63,6 +63,12 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
             for row in connection.execute("PRAGMA table_info(network_contexts)").fetchall()
         }
     assert "engine_id" in context_columns
+    with database.connection() as connection:
+        task_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(workspace_tasks)").fetchall()
+        }
+    assert "idempotency_hash" in task_columns
 
 
 def test_migrate_schema_23_preserves_context_state(tmp_path: Path) -> None:
@@ -147,5 +153,5 @@ def test_doctor_applies_pending_schema_migration(tmp_path: Path) -> None:
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(forwards)").fetchall()
         }
-    assert version == 33
+    assert version == SCHEMA_VERSION
     assert {"command_argv_json", "engine_id"}.issubset(columns)

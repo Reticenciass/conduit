@@ -156,7 +156,7 @@ mypy ctfws: PASS
 compileall: PASS
 npm run check: PASS
 npm run build: PASS
-CLI: ctfws 0.28.0 / schema 33
+CLI: ctfws 0.28.0 / schema 34
 ```
 
 As integrações web, frontend e CLI também são exercitadas em workspaces temporários: criação de

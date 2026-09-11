@@ -1136,6 +1136,17 @@ def test_web_executes_reviewed_context_launcher_as_idempotent_job(workspace) -> 
             time.sleep(0.05)
         assert result["status"] == "succeeded"
         assert "button-execution-ok" in str(result["result"]["output"])
+        conflict = client.post(
+            f"/api/v2/workspaces/{workspace.lab.id}/contexts/{context.id}/execute",
+            headers={"Idempotency-Key": "execute-once"},
+            json={
+                "program": sys.executable,
+                "arguments": ["-c", "print('different-content')"],
+                "launcher": "environment",
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["code"] == "idempotency_conflict"
 
 
 def test_web_v2_exposes_history_evidence_search_and_topology(workspace) -> None:

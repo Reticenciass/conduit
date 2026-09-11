@@ -10,7 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock
 
-from ctfws.core.errors import EntityNotFoundError
+from ctfws.core.errors import EntityNotFoundError, IdempotencyConflictError
 from ctfws.models.task import TaskCreate, TaskRead, TaskStatus
 from ctfws.services.workspace import WorkspaceService
 
@@ -78,6 +78,7 @@ class TaskManager:
         if data.idempotency_key:
             existing = self.workspace.tasks.find_idempotent(data.idempotency_key)
             if existing is not None:
+                self._validate_idempotent_replay(existing, data)
                 return existing
         try:
             task = self.workspace.tasks.create(data)
@@ -85,6 +86,7 @@ class TaskManager:
             if data.idempotency_key:
                 existing = self.workspace.tasks.find_idempotent(data.idempotency_key)
                 if existing is not None:
+                    self._validate_idempotent_replay(existing, data)
                     return existing
             raise
         future = self._executor.submit(self._run, task.id, work)
@@ -98,6 +100,7 @@ class TaskManager:
         if data.idempotency_key:
             existing = self.workspace.tasks.find_idempotent(data.idempotency_key)
             if existing is not None:
+                self._validate_idempotent_replay(existing, data)
                 return existing
         try:
             task = self.workspace.tasks.create(data)
@@ -105,12 +108,30 @@ class TaskManager:
             if data.idempotency_key:
                 existing = self.workspace.tasks.find_idempotent(data.idempotency_key)
                 if existing is not None:
+                    self._validate_idempotent_replay(existing, data)
                     return existing
             raise
         async_task = asyncio.create_task(self._run_async(task.id, work))
         with self._lock:
             self._async_tasks[task.id] = async_task
         return task
+
+    @staticmethod
+    def _validate_idempotent_replay(existing: TaskRead, requested: TaskCreate) -> None:
+        """Reject reuse of one idempotency key for different request content."""
+
+        if (
+            existing.idempotency_hash is not None
+            and requested.idempotency_hash is not None
+            and existing.idempotency_hash != requested.idempotency_hash
+        ):
+            raise IdempotencyConflictError(
+                "A chave de idempotência já foi usada por uma requisição diferente."
+            )
+        if existing.idempotency_hash is None and requested.idempotency_hash is not None:
+            raise IdempotencyConflictError(
+                "A chave de idempotência pertence a uma tarefa legada; use uma nova chave."
+            )
 
     def retry(self, task_id: int, data: TaskCreate, work: TaskWork) -> TaskRead:
         """Create a new explicit attempt; the original task remains immutable in history."""

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from ctfws.core.errors import EntityNotFoundError
+from ctfws.core.errors import EntityNotFoundError, IdempotencyConflictError
 from ctfws.core.limits import max_file_bytes, max_workspace_bytes
 from ctfws.core.paths import WorkspacePaths
 from ctfws.database.repositories import ObservationRepository
@@ -296,6 +296,21 @@ def create_app(paths: WorkspacePaths) -> Any:
             status_code=422,
         )
 
+    @app.exception_handler(IdempotencyConflictError)
+    async def api_idempotency_error(_request: Request, error: IdempotencyConflictError) -> Any:
+        """Make duplicate-key content conflicts explicit and retry-safe."""
+
+        return JSONResponse(
+            {
+                "code": "idempotency_conflict",
+                "message": str(error),
+                "detail": str(error),
+                "retryable": False,
+                "diagnostic_id": secrets.token_hex(8),
+            },
+            status_code=409,
+        )
+
     @app.exception_handler(Exception)
     async def api_internal_error(_request: Request, error: Exception) -> Any:
         """Keep unexpected failures machine-readable without exposing internals."""
@@ -374,6 +389,28 @@ def create_app(paths: WorkspacePaths) -> Any:
     def actor_for(request: Request) -> str:
         principal = principal_for(request)
         return principal.subject if principal is not None else "anonymous"
+
+    def operation_hash(
+        kind: str,
+        resource_id: int | None,
+        actor: str,
+        payload: object,
+    ) -> str:
+        """Fingerprint the scoped request used with an idempotency key."""
+
+        canonical = json.dumps(
+            {
+                "actor": actor,
+                "kind": kind,
+                "resource_id": resource_id,
+                "payload": payload,
+                "workspace_id": workspace.lab.id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def require_confirmation(confirmation: OperationConfirmation | None, operation: str) -> None:
         """Keep the safety confirmation on the API boundary, not only in the UI."""
@@ -1052,6 +1089,7 @@ def create_app(paths: WorkspacePaths) -> Any:
         idempotency_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         require_workspace(workspace_id)
+        actor = actor_for(request)
         task = tasks.submit(
             TaskCreate(
                 kind="context_execution",
@@ -1059,7 +1097,13 @@ def create_app(paths: WorkspacePaths) -> Any:
                 resource_id=context_id,
                 total_steps=1,
                 idempotency_key=idempotency_key,
-                requested_by=actor_for(request),
+                idempotency_hash=operation_hash(
+                    "context_execution",
+                    context_id,
+                    actor,
+                    data.model_dump(mode="json"),
+                ),
+                requested_by=actor,
             ),
             lambda update: _context_execution_task(contexts, context_id, data, update),
         )
@@ -1349,6 +1393,19 @@ def create_app(paths: WorkspacePaths) -> Any:
             idempotency_key=idempotency_key,
             requested_by=actor_for(http_request),
         )
+        task_data = task_data.model_copy(
+            update={
+                "idempotency_hash": operation_hash(
+                    "tool_transfer",
+                    tool_id,
+                    task_data.requested_by or "anonymous",
+                    {
+                        "connection_id": connection_id,
+                        "request": transfer_request.model_dump(mode="json"),
+                    },
+                )
+            }
+        )
         if transfers.async_available:
 
             async def upload_tool_task(_update: Any) -> dict[str, object]:
@@ -1508,6 +1565,7 @@ def create_app(paths: WorkspacePaths) -> Any:
         idempotency_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         require_workspace(workspace_id)
+        actor = actor_for(http_request)
         task = tasks.submit(
             TaskCreate(
                 kind="file_upload",
@@ -1515,7 +1573,13 @@ def create_app(paths: WorkspacePaths) -> Any:
                 resource_id=connection_id,
                 total_steps=1,
                 idempotency_key=idempotency_key,
-                requested_by=actor_for(http_request),
+                idempotency_hash=operation_hash(
+                    "file_upload",
+                    connection_id,
+                    actor,
+                    request.model_dump(mode="json"),
+                ),
+                requested_by=actor,
             ),
             lambda _update: asdict(
                 transfers.upload(
@@ -1541,6 +1605,7 @@ def create_app(paths: WorkspacePaths) -> Any:
         idempotency_key: str | None = Header(default=None),
     ) -> dict[str, Any]:
         require_workspace(workspace_id)
+        actor = actor_for(http_request)
         task = tasks.submit(
             TaskCreate(
                 kind="file_download",
@@ -1548,7 +1613,13 @@ def create_app(paths: WorkspacePaths) -> Any:
                 resource_id=connection_id,
                 total_steps=1,
                 idempotency_key=idempotency_key,
-                requested_by=actor_for(http_request),
+                idempotency_hash=operation_hash(
+                    "file_download",
+                    connection_id,
+                    actor,
+                    request.model_dump(mode="json"),
+                ),
+                requested_by=actor,
             ),
             lambda _update: asdict(
                 transfers.download(
@@ -1701,13 +1772,20 @@ def create_app(paths: WorkspacePaths) -> Any:
         require_workspace(workspace_id)
         try:
             connections.get(connection_id)
+            actor = actor_for(request)
             task_data = TaskCreate(
                 kind="remote_inspection",
                 resource_type="connection",
                 resource_id=connection_id,
                 total_steps=len(inspection.COMMANDS),
                 idempotency_key=idempotency_key,
-                requested_by=actor_for(request),
+                idempotency_hash=operation_hash(
+                    "remote_inspection",
+                    connection_id,
+                    actor,
+                    {"commands": list(inspection.COMMANDS)},
+                ),
+                requested_by=actor,
             )
             if inspection.async_available:
                 task = tasks.submit_async(

@@ -27,8 +27,8 @@ class TaskRepository:
                 INSERT INTO workspace_tasks(
                     lab_id, kind, resource_type, resource_id, status, progress,
                     current_step, total_steps, completed_steps, result_json,
-                    idempotency_key, requested_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, 0, '{}', ?, ?, ?, ?)
+                    idempotency_key, idempotency_hash, requested_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, 0, '{}', ?, ?, ?, ?, ?)
                 """,
                 (
                     self.lab_id,
@@ -37,6 +37,7 @@ class TaskRepository:
                     data.resource_id,
                     data.total_steps,
                     data.idempotency_key,
+                    data.idempotency_hash,
                     data.requested_by,
                     now,
                     now,

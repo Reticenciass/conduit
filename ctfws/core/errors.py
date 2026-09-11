@@ -17,5 +17,9 @@ class EntityNotFoundError(CTFWSError):
     """Raised when a requested entity does not exist."""
 
 
+class IdempotencyConflictError(CTFWSError):
+    """Raised when one idempotency key is reused with different content."""
+
+
 class InvalidWorkspaceError(CTFWSError):
     """Raised when a path is not a valid CTF Workspace directory."""

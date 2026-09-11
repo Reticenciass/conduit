@@ -29,6 +29,7 @@ class TaskCreate(BaseModel):
     resource_id: int | None = Field(default=None, ge=1)
     total_steps: int = Field(default=0, ge=0, le=10000)
     idempotency_key: str | None = Field(default=None, max_length=200)
+    idempotency_hash: str | None = Field(default=None, min_length=64, max_length=64)
     requested_by: str | None = Field(default=None, max_length=200)
 
 

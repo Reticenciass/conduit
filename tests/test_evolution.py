@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from ctfws.core.errors import IdempotencyConflictError
 from ctfws.models.access import AccessPathCreate, AccessPathState
 from ctfws.models.connection import ConnectionProfileCreate
 from ctfws.models.context import ContextStatus, ContextTransport, NetworkContextCreate
@@ -84,6 +85,23 @@ def test_task_manager_has_durable_success_and_idempotency(workspace) -> None:
             break
         time.sleep(0.02)
     assert manager.get(first.id).result == {"ok": True}
+    manager.close()
+
+
+def test_task_manager_rejects_idempotency_key_with_different_content(workspace) -> None:
+    manager = TaskManager(workspace)
+    first = TaskCreate(
+        kind="fixture",
+        total_steps=1,
+        idempotency_key="fixture-conflict",
+        idempotency_hash="a" * 64,
+    )
+    manager.submit(first, lambda _update: {"ok": True})
+    with pytest.raises(IdempotencyConflictError, match="requisição diferente"):
+        manager.submit(
+            first.model_copy(update={"idempotency_hash": "b" * 64}),
+            lambda _update: {"ok": False},
+        )
     manager.close()
 
 

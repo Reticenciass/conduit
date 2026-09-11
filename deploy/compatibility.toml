@@ -3,7 +3,7 @@
 
 [ctfws]
 version = "0.28.0"
-schema = 33
+schema = 34
 
 [openssh]
 minimum_major = 8
