@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from ipaddress import ip_address
 from pathlib import Path
@@ -200,6 +202,26 @@ def _resolve_start_workspace(value: Path | None) -> WorkspacePaths:
         "Nenhum workspace foi encontrado. Execute 'conduit lab create NOME' ou "
         "informe --workspace."
     )
+
+
+def _systemd_service_active() -> bool:
+    """Return whether the managed Linux motor is already running."""
+
+    if os.name == "nt" or os.getenv("CTFWS_SERVICE_MODE") == "1":
+        return False
+    systemctl = shutil.which("systemctl")
+    if systemctl is None:
+        return False
+    try:
+        result = subprocess.run(
+            [systemctl, "is-active", "--quiet", "ctfws.service"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _handle_error(error: Exception) -> None:
@@ -1327,7 +1349,19 @@ def start(
     """Start Conduit with workspace discovery and safe local defaults."""
 
     try:
-        _run_web(_resolve_start_workspace(ctx.obj.get("workspace")), host, port)
+        selected_workspace = ctx.obj.get("workspace")
+        if (
+            selected_workspace is None
+            and not (Path.cwd() / "workspace.db").is_file()
+            and host in {"127.0.0.1", "localhost", "::1"}
+            and port == 8765
+            and _systemd_service_active()
+        ):
+            console.print("[green]Conduit já está em execução via ctfws.service.[/green]")
+            console.print("Acesso local: http://127.0.0.1:8765")
+            console.print("Acesso pelo Windows: ssh -L 8765:127.0.0.1:8765 USER@SERVIDOR_LINUX")
+            return
+        _run_web(_resolve_start_workspace(selected_workspace), host, port)
     except Exception as error:
         _handle_error(error)
 

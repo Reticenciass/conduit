@@ -303,6 +303,11 @@ sudo journalctl -u ctfws.service -f
 The service keeps the name `ctfws.service` for compatibility, but runs the engine through the
 official `conduit start` command.
 
+When the installer is run through `sudo`, it also aligns `conduit` and `ctfws` in the invoking
+user's `~/.local/bin` with the managed virtual environment. Any older launcher is moved to a
+timestamped backup instead of being deleted. If the service is already running, `conduit start`
+reports the existing service and does not create a competing engine instance.
+
 ## Persistence, backup, and recovery
 
 Each workspace has its own SQLite database. Conduit preserves snapshots, partial results,

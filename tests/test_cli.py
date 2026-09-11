@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import ctfws.cli.app as cli_app
 from ctfws.cli.app import app
 
 
@@ -118,3 +119,17 @@ def test_conduit_start_uses_workspace_environment(
     assert started.exit_code == 0, started.stdout
     assert "Conduit iniciando" in started.stdout
     assert "9876" in started.stdout
+
+
+def test_conduit_start_reports_managed_service_instead_of_starting_a_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_app, "_systemd_service_active", lambda: True)
+
+    started = runner.invoke(app, ["start"])
+
+    assert started.exit_code == 0, started.stdout
+    assert "ctfws.service" in started.stdout
+    assert "Acesso local" in started.stdout

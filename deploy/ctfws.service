@@ -10,6 +10,7 @@ Group=ctfws
 WorkingDirectory=/var/lib/ctfws
 Environment=CTFWS_AUTH_REQUIRED=1
 Environment=CTFWS_NAMESPACE_SOCKET=/run/ctfws/namespace-helper.sock
+Environment=CTFWS_SERVICE_MODE=1
 EnvironmentFile=-/etc/ctfws/ctfws.env
 ExecStart=/opt/ctfws/.venv/bin/conduit --workspace /var/lib/ctfws/workspace start --host 127.0.0.1 --port 8765
 Restart=on-failure
