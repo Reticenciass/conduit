@@ -67,7 +67,14 @@ def main(argv: list[str] | None = None) -> int:
     # No supplementary groups are needed by the proxy. The managed binary
     # carries only CAP_NET_ADMIN so it can create its TUN in this namespace.
     posix_os: Any = os
-    posix_os.setgroups([])
+    try:
+        posix_os.setgroups([])
+    except PermissionError:
+        # Some hardened hosts omit CAP_SETGID from child processes even when
+        # the helper has it. Continue only when systemd already supplied the
+        # worker's single, expected group; never retain an unrelated group.
+        if any(group != account.pw_gid for group in posix_os.getgroups()):
+            raise
     posix_os.setgid(account.pw_gid)
     posix_os.setuid(account.pw_uid)
     if args.run_program is not None:
