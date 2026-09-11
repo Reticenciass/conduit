@@ -132,7 +132,7 @@ para a área de Atividade. Copiar o comando continua disponível, mas não é ne
 normal. UDP, ICMP e binários estaticamente ligados não são encaminhados automaticamente.
 
 Contextos roteados permanecem indisponíveis até o helper de namespace, o manifesto de versão do
-adaptador e os testes de contrato estarem instalados. O Conduit fixa inicialmente o Ligolo-ng
+adaptador, a orquestração isolada do runtime e os testes de contrato estarem instalados. O Conduit fixa inicialmente o Ligolo-ng
 `0.9.1`, usando os artefatos oficiais e seus checksums publicados. O manifesto precisa declarar
 `contract = "ctfws-routed-context-v1"`, fixar `version`, caminhos dos dois binários e seus
 SHA-256; `CTFWS_LIGOLO_VERSION` apenas identifica a instalação e não substitui a verificação dos
@@ -153,9 +153,9 @@ curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/rem
 ```
 
 Preparar o namespace não inicia Ligolo, não altera a rota padrão e não marca o contexto como
-ativo. O diagnóstico mostra separadamente a presença do helper, a versão, os checksums e os
-binários. Um contexto só é oferecido como ativo quando transporte, namespace e destino tiverem
-provas próprias; a instalação não habilita o helper automaticamente.
+ativo. O diagnóstico mostra separadamente a presença do helper, a versão, os checksums, os
+binários e se a orquestração do runtime está disponível. Enquanto essa última verificação não
+existir, a interface bloqueia o botão de iniciar para não simular um acesso roteado.
 
 ## Reinício e retomada
 

@@ -171,6 +171,15 @@ class NetworkContextService:
         ligolo_proxy_path = manifest.proxy_path or shutil.which("ligolo-proxy")
         ligolo_agent_available = ligolo_agent_path is not None and Path(ligolo_agent_path).is_file()
         ligolo_proxy_available = ligolo_proxy_path is not None and Path(ligolo_proxy_path).is_file()
+        # The manifest and helper prove that prerequisites exist; they do not
+        # prove that this motor can safely orchestrate proxy, agent, TUN,
+        # routes, DNS and cleanup as one transaction. Keep the routed button
+        # disabled until that runtime contract is implemented and tested.
+        routed_runtime_supported = False
+        routed_reason = (
+            "o adaptador Ligolo está identificado, mas a orquestração isolada "
+            "de proxy, agente, TUN e limpeza ainda não está habilitada neste motor"
+        )
         return {
             "socks": True,
             "routed": {
@@ -183,6 +192,7 @@ class NetworkContextService:
                     and ligolo_proxy_available
                     and manifest.valid
                     and manifest.binary_verified
+                    and routed_runtime_supported
                 ),
                 "requires": [
                     "pinned Ligolo-ng 0.9.1",
@@ -192,6 +202,8 @@ class NetworkContextService:
                     "namespace-helper",
                 ],
                 "contract": "ctfws-routed-context-v1",
+                "runtime_supported": routed_runtime_supported,
+                "reason": routed_reason,
                 "note": "Rotas globais e DNS da Kali nunca são alterados.",
                 "helper": helper,
                 "ligolo_agent_available": ligolo_agent_available,
@@ -431,8 +443,8 @@ class NetworkContextService:
                 health="routed_unavailable",
                 capabilities=(),
                 error=(
-                    "Contexto roteado indisponível: corrija os requisitos mostrados no diagnóstico "
-                    f"antes de iniciar (motivo={routed.get('manifest', {})})."
+                    "Contexto roteado indisponível: "
+                    f"{routed.get('reason', 'consulte o diagnóstico do adaptador')}"
                 ),
             )
 
