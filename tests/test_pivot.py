@@ -151,6 +151,28 @@ def test_ligolo_manifest_requires_a_pinned_matching_version(tmp_path, monkeypatc
     assert status.reason == "contrato e versão compatíveis"
 
 
+def test_ligolo_api_login_retries_while_proxy_web_layer_starts(monkeypatch) -> None:
+    import asyncio
+
+    from ctfws.services.ligolo_runtime import LigoloAPIClient, LigoloAPIError
+
+    client = LigoloAPIClient("169.254.0.2", 22402, "conduit", "temporary-secret")
+    calls = 0
+
+    async def request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LigoloAPIError(401, "Unauthorized")
+        return {"token": "token"}
+
+    monkeypatch.setattr(client, "_request", request)
+    asyncio.run(client.login())
+
+    assert client.token == "token"
+    assert calls == 2
+
+
 def test_ligolo_is_not_executed_by_the_local_motor(workspace) -> None:
     host = workspace.add_host(HostCreate(name="pivot", ip="192.0.2.45"))
     forward = PivotService(workspace).add_forward(

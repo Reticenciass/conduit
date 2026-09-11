@@ -39,6 +39,8 @@ class LigoloAPIError(RuntimeError):
 class LigoloAPIClient:
     """Small, dependency-free client for the pinned local Ligolo API."""
 
+    AUTH_READY_TIMEOUT_SECONDS = 8.0
+
     def __init__(self, host: str, port: int, username: str, password: str) -> None:
         self.host = host
         self.port = port
@@ -47,13 +49,29 @@ class LigoloAPIClient:
         self.token: str | None = None
 
     async def login(self) -> None:
-        result = await self._request(
-            "POST", "/api/auth", {"Username": self.username, "Password": self.password}, auth=False
-        )
-        token = result.get("token")
-        if not isinstance(token, str) or not token:
-            raise LigoloAPIError(502, "A API Ligolo não retornou uma sessão válida.")
-        self.token = token
+        deadline = time.monotonic() + self.AUTH_READY_TIMEOUT_SECONDS
+        while True:
+            try:
+                result = await self._request(
+                    "POST",
+                    "/api/auth",
+                    {"Username": self.username, "Password": self.password},
+                    auth=False,
+                )
+                token = result.get("token")
+                if not isinstance(token, str) or not token:
+                    raise LigoloAPIError(502, "A API Ligolo não retornou uma sessão válida.")
+                self.token = token
+                return
+            except (OSError, LigoloAPIError) as error:
+                # The proxy opens its API listener before the web middleware
+                # has necessarily completed. Retry only startup-like failures;
+                # malformed responses and other HTTP errors remain fail-fast.
+                if isinstance(error, LigoloAPIError) and error.status not in {401, 403, 500}:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(0.2)
 
     async def get(self, path: str) -> Any:
         return await self._request("GET", path)
