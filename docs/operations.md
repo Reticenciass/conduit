@@ -149,7 +149,8 @@ de chamar `ip`, registra o manifesto retornado e expõe o caminho de limpeza:
 
 ```bash
 sudo systemctl enable --now ctfws-namespace-helper.service
-curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/prepare?device=ctfws0'
+# A preparação do namespace é uma operação explícita e privilegiada.
+curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/prepare?device=ctfws0' -H 'content-type: application/json' -d '{"confirm":true}'
 curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/remove'
 ```
 
