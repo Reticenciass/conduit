@@ -35,12 +35,12 @@ def _setns(fd: int) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Conduit internal routed proxy worker")
     parser.add_argument("--namespace", required=True)
-    parser.add_argument("--proxy", type=Path, required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--selfcert-cache", type=Path, required=True)
-    parser.add_argument("--selfcert-domain", required=True)
-    parser.add_argument("--listen", required=True)
-    parser.add_argument("--api-listen", required=True)
+    parser.add_argument("--proxy", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--selfcert-cache", type=Path)
+    parser.add_argument("--selfcert-domain")
+    parser.add_argument("--listen")
+    parser.add_argument("--api-listen")
     parser.add_argument("--run-program")
     parser.add_argument("--run-arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -51,8 +51,22 @@ def main(argv: list[str] | None = None) -> int:
     netns_path = Path("/run/netns") / args.namespace
     if not netns_path.is_file():
         parser.error("namespace não encontrado")
-    if not args.proxy.is_file() or not args.config.is_file():
-        parser.error("artefato do proxy ausente")
+    if args.run_program is None:
+        if any(
+            value is None
+            for value in (
+                args.proxy,
+                args.config,
+                args.selfcert_cache,
+                args.selfcert_domain,
+                args.listen,
+                args.api_listen,
+            )
+        ):
+            parser.error("o modo proxy exige todos os parâmetros do runtime")
+        assert args.proxy is not None and args.config is not None
+        if not args.proxy.is_file() or not args.config.is_file():
+            parser.error("artefato do proxy ausente")
 
     posix_pwd: Any = pwd
     getpwnam = posix_pwd.getpwnam
@@ -88,6 +102,14 @@ def main(argv: list[str] | None = None) -> int:
         output, _ = process.communicate()
         sys.stdout.buffer.write((output or b"")[: 4 * 1024 * 1024])
         return int(process.returncode or 0)
+    assert (
+        args.proxy is not None
+        and args.config is not None
+        and args.selfcert_cache is not None
+        and args.selfcert_domain is not None
+        and args.listen is not None
+        and args.api_listen is not None
+    )
     command = [
         str(args.proxy),
         "--daemon",
