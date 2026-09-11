@@ -75,6 +75,11 @@ class WorkspaceDoctor:
             path = paths.root / directory
             checks.append(DoctorCheck(f"directory:{directory}", path.is_dir(), str(path)))
 
+        ligolo = ligolo_manifest_status()
+        managed_tools = {
+            "ligolo-agent": ligolo.agent_path,
+            "ligolo-proxy": ligolo.proxy_path,
+        }
         for executable in (
             "ssh",
             "tmux",
@@ -83,7 +88,7 @@ class WorkspaceDoctor:
             "ligolo-proxy",
             "dot",
         ):
-            found = shutil.which(executable)
+            found = managed_tools.get(executable) or shutil.which(executable)
             checks.append(
                 DoctorCheck(
                     f"tool:{executable}",
@@ -93,7 +98,6 @@ class WorkspaceDoctor:
                 )
             )
 
-        ligolo = ligolo_manifest_status()
         checks.append(
             DoctorCheck(
                 "tool:ligolo-contract",
