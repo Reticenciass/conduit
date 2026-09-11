@@ -74,6 +74,7 @@ class ContextRepository:
         process_started_at: str | None = None,
         process_executable: str | None = None,
         process_fingerprint: str | None = None,
+        clear_process_identity: bool = False,
         engine_id: str | None = None,
         clear_engine_id: bool = False,
         namespace_name: str | None = None,
@@ -90,16 +91,24 @@ class ContextRepository:
         )
         namespace_sql = "NULL" if clear_namespace else "COALESCE(?, namespace_name)"
         engine_sql = "NULL" if clear_engine_id else "COALESCE(?, engine_id)"
+        process_started_sql = (
+            "NULL" if clear_process_identity else "COALESCE(?, process_started_at)"
+        )
+        process_executable_sql = (
+            "NULL" if clear_process_identity else "COALESCE(?, process_executable)"
+        )
+        process_fingerprint_sql = (
+            "NULL" if clear_process_identity else "COALESCE(?, process_fingerprint)"
+        )
         params: list[object] = [
             status.value,
             pid,
             error,
             health,
             capabilities_json,
-            process_started_at,
-            process_executable,
-            process_fingerprint,
         ]
+        if not clear_process_identity:
+            params.extend([process_started_at, process_executable, process_fingerprint])
         if not clear_engine_id:
             params.append(engine_id)
         if not clear_namespace:
@@ -112,9 +121,9 @@ class ContextRepository:
                 SET status = ?, pid = ?, error = ?,
                     health = ?,
                     capabilities_json = COALESCE(?, capabilities_json),
-                    process_started_at = COALESCE(?, process_started_at),
-                    process_executable = COALESCE(?, process_executable),
-                    process_fingerprint = COALESCE(?, process_fingerprint),
+                    process_started_at = {process_started_sql},
+                    process_executable = {process_executable_sql},
+                    process_fingerprint = {process_fingerprint_sql},
                     engine_id = {engine_sql},
                     namespace_name = {namespace_sql},
                     resource_manifest_json = COALESCE(?, resource_manifest_json),

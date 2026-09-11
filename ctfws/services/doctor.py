@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import sqlite3
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from ctfws.core.limits import max_file_bytes, max_workspace_bytes, retention_day
 from ctfws.core.paths import WORKSPACE_DIRS, WorkspacePaths
 from ctfws.core.process import process_identity
 from ctfws.database.db import SCHEMA_VERSION, Database
-from ctfws.pivot.manifest import ligolo_manifest_status
+from ctfws.pivot.manifest import ligolo_agent_for_architecture, ligolo_manifest_status
 from ctfws.services.engine import EngineLock
 from ctfws.services.maintenance import workspace_usage
 
@@ -103,6 +104,38 @@ class WorkspaceDoctor:
                 "tool:ligolo-contract",
                 ligolo.valid,
                 ligolo.reason,
+                optional=True,
+            )
+        )
+        for architecture in ("amd64", "arm64"):
+            agent_path, agent_reason = ligolo_agent_for_architecture(architecture)
+            checks.append(
+                DoctorCheck(
+                    f"tool:ligolo-agent-{architecture}",
+                    agent_path is not None,
+                    agent_path or agent_reason,
+                    optional=True,
+                )
+            )
+        cap_detail = "getcap não encontrado"
+        cap_ok = False
+        if ligolo.proxy_path and shutil.which("getcap"):
+            try:
+                capability = subprocess.run(
+                    ["getcap", ligolo.proxy_path],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                cap_detail = capability.stdout.strip() or "CAP_NET_ADMIN ausente"
+                cap_ok = "cap_net_admin" in capability.stdout.casefold()
+            except OSError as error:
+                cap_detail = str(error)
+        checks.append(
+            DoctorCheck(
+                "tool:ligolo-proxy-net-admin",
+                cap_ok,
+                cap_detail,
                 optional=True,
             )
         )

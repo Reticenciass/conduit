@@ -131,7 +131,7 @@ mesma lista de argumentos como uma tarefa assíncrona, sem shell livre, com time
 para a área de Atividade. Copiar o comando continua disponível, mas não é necessário no fluxo
 normal. UDP, ICMP e binários estaticamente ligados não são encaminhados automaticamente.
 
-Contextos roteados permanecem indisponíveis até o helper de namespace, o manifesto de versão do
+Contextos roteados permanecem opt-in até o helper de namespace, o manifesto de versão do
 adaptador, a orquestração isolada do runtime e os testes de contrato estarem instalados. O Conduit fixa inicialmente o Ligolo-ng
 `0.9.1`, usando os artefatos oficiais e seus checksums publicados. O manifesto precisa declarar
 `contract = "ctfws-routed-context-v1"`, fixar `version`, caminhos dos dois binários e seus
@@ -141,10 +141,11 @@ plano de limpeza reverso (`.../namespace-plan` e `.../namespace-cleanup-plan`) e
 inteiro antes de executar qualquer operação privilegiada. Ele aceita somente operações tipadas
 do workspace; a rota padrão e o DNS global da Kali não são substituídos.
 
-Quando o serviço `ctfws-namespace-helper.service` estiver explicitamente habilitado, o motor usa
+Quando o serviço `ctfws-namespace-helper.service` estiver explicitamente habilitado e
+`CTFWS_ENABLE_ROUTED_CONTEXTS=1` estiver presente no ambiente do motor, o motor usa
 `CTFWS_NAMESPACE_SOCKET=/run/ctfws/namespace-helper.sock`. O helper root-owned aceita apenas
-`create`, `route-add`, `route-delete` e `delete` em lotes JSON versionados, confirma o workspace e
-o contexto antes de chamar `ip`, registra o manifesto retornado e expõe o caminho de limpeza:
+operações tipadas de namespace, enlace isolado e proxy. Ele confirma o workspace e o contexto antes
+de chamar `ip`, registra o manifesto retornado e expõe o caminho de limpeza:
 
 ```bash
 sudo systemctl enable --now ctfws-namespace-helper.service
@@ -152,10 +153,12 @@ curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/pre
 curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/remove'
 ```
 
-Preparar o namespace não inicia Ligolo, não altera a rota padrão e não marca o contexto como
-ativo. O diagnóstico mostra separadamente a presença do helper, a versão, os checksums, os
-binários e se a orquestração do runtime está disponível. Enquanto essa última verificação não
-existir, a interface bloqueia o botão de iniciar para não simular um acesso roteado.
+O botão **Acessar rede** executa uma transação completa: namespace/veth isolados, proxy Ligolo
+fixado e sem privilégios elevados, agente remoto temporário via SFTP, encaminhamento reverso SSH,
+autenticação da API local, TUN, rotas selecionadas e prova do túnel. O diagnóstico mostra
+separadamente helper, `CAP_NET_ADMIN`, versão, checksums, proxy, agente e cada etapa. Se qualquer
+dependência falhar, o botão permanece bloqueado ou o cartão mostra a falha e a limpeza pendente;
+nenhuma requisição é apresentada como acesso pronto apenas porque o listener abriu.
 
 ## Reinício e retomada
 

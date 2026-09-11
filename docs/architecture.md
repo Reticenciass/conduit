@@ -75,7 +75,7 @@ sequenceDiagram
 | Perfis SSH | Implementado | `profile add/list/parse` ou API v1 | metadados sem senha; `ProxyJump` tipado, cadeia limitada e erros SSH categorizados |
 | Terminais gerenciados | Implementado | dashboard/API v1/v2 | terminal local/SSH, PTY compartilhado AsyncSSH + WebSocket; proprietário, privado/compartilhado e controle de entrada |
 | Arquivos do workspace | Implementado | API v1 + SFTP compartilhado | upload/listagem/download em streaming, hash e verificação remota |
-| Transportes | Implementado | SSH, Chisel, Ligolo-ng, nc, gsocket | catálogo de capacidades/papéis/local, prévia sem persistência; SSH/SOCKS do dashboard com listeners AsyncSSH; demais adapters em planos explícitos |
+| Transportes | Implementado com opt-in | SSH, Chisel, Ligolo-ng, nc, gsocket | catálogo de capacidades/papéis/local; SSH/SOCKS reutilizam AsyncSSH; Ligolo 0.9.1 usa proxy/agente verificados, veth/namespace isolado e worker contextual; Chisel/nc/gsocket permanecem em planos explícitos |
 | Shells/tmux | Implementado | `shell`, `tmux` | registro e planos determinísticos |
 | Topologia | Implementado | `map`, `topology export` | texto, DOT e PNG quando `dot` existe |
 | Ferramentas | Implementado | catálogo na UI/API + `tool_transfer` | hash, arquitetura, versão e envio explícito sem execução |
@@ -138,13 +138,14 @@ assumam esses recursos simultaneamente.
 | --- | --- | --- |
 | SSH | `-L`, `-R`, `-D`, keepalive e `ExitOnForwardFailure` | host key, destino e processo local |
 | Chisel | cliente/servidor, `socks`, port mapping e reverse mapping | endpoint, auth/fingerprint e processo local |
-| Ligolo-ng | agente/proxy e fingerprint opcional | execução remota/contextual explícita; processo local do motor bloqueado |
+| Ligolo-ng | agente/proxy fixados, fingerprint TLS e worker contextual | proxy executado como `ctfws` em namespace próprio; agente enviado por SFTP e ligado por reverse-forward SSH; nenhum processo Ligolo é iniciado no namespace global do motor |
 | Netcat | cliente/servidor de fluxo TCP único | não é shell independente nem acesso roteado |
 | gsocket | cliente/servidor explícito | ferramenta externa opcional e endpoint |
 
 Adapters não recebem credenciais secretas; `auth_ref` é somente uma referência para o operador
 resolver no ambiente seguro. Cada plano persistido também registra `role` e `execution_location`;
-o motor recusa iniciar um plano remoto/contextual ou um agente Ligolo como processo local.
+o motor recusa iniciar um agente Ligolo como processo local fora do namespace e envia ferramentas
+contextuais apenas pelo worker sem privilégios.
 
 ## Qualidade verificada
 

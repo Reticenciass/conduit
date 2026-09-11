@@ -214,6 +214,45 @@ def _configured_hash(section: dict[str, object], key: str, env_name: str) -> str
     return configured.strip().lower()
 
 
+def ligolo_agent_for_architecture(architecture: str) -> tuple[str | None, str]:
+    """Resolve and verify the managed agent for a remote Linux architecture."""
+
+    normalized = architecture.strip().casefold()
+    aliases = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+    arch = aliases.get(normalized)
+    if arch is None:
+        return None, f"arquitetura remota não suportada pelo manifesto: {architecture}"
+    manifest = ligolo_manifest_status()
+    selected_path = _configured_path()
+    if selected_path is None or not selected_path.is_file():
+        return None, "manifesto Ligolo não encontrado"
+    try:
+        with selected_path.open("rb") as handle:
+            document = tomllib.load(handle)
+        section = document.get("ligolo_ng", {})
+        if not isinstance(section, dict):
+            return None, "seção ligolo_ng inválida"
+        path = _configured_binary_path(
+            section,
+            f"agent_linux_{arch}_path",
+            f"CTFWS_LIGOLO_AGENT_{arch.upper()}",
+        )
+        expected = _configured_hash(
+            section,
+            f"agent_linux_{arch}_sha256",
+            f"CTFWS_LIGOLO_AGENT_{arch.upper()}_SHA256",
+        )
+    except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+        return None, f"manifesto Ligolo inválido: {error}"
+    if path is None and arch == "amd64":
+        path, expected = manifest.agent_path, manifest.agent_sha256
+    reason = _verify_single_binary("agent", path, expected)
+    if reason is not None:
+        return None, reason
+    assert path is not None
+    return path, "agente Ligolo compatível e verificado"
+
+
 def _verify_binaries(
     agent_path: str | None,
     proxy_path: str | None,
@@ -226,24 +265,29 @@ def _verify_binaries(
         return None
     values = (("agent", agent_path, agent_sha256), ("proxy", proxy_path, proxy_sha256))
     for role, path, expected in values:
-        if not path or not expected:
-            return f"o manifesto não fixa o caminho e o checksum do {role} Ligolo"
-        binary = Path(path)
-        if not binary.is_file() or not os.access(binary, os.X_OK):
-            return f"binário {role} Ligolo ausente ou não executável"
-        if len(expected) != 64 or any(
-            character not in "0123456789abcdef" for character in expected
-        ):
-            return f"checksum do {role} Ligolo inválido no manifesto"
-        digest = hashlib.sha256()
-        try:
-            with binary.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        except OSError as error:
-            return f"não foi possível ler o binário {role} Ligolo: {error}"
-        if digest.hexdigest() != expected:
-            return f"checksum do {role} Ligolo não corresponde ao manifesto"
+        reason = _verify_single_binary(role, path, expected)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _verify_single_binary(role: str, path: str | None, expected: str | None) -> str | None:
+    if not path or not expected:
+        return f"o manifesto não fixa o caminho e o checksum do {role} Ligolo"
+    binary = Path(path)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        return f"binário {role} Ligolo ausente ou não executável"
+    if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
+        return f"checksum do {role} Ligolo inválido no manifesto"
+    digest = hashlib.sha256()
+    try:
+        with binary.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        return f"não foi possível ler o binário {role} Ligolo: {error}"
+    if digest.hexdigest() != expected:
+        return f"checksum do {role} Ligolo não corresponde ao manifesto"
     return None
 
 

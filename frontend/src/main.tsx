@@ -474,8 +474,7 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
     const action = String(context.status) === "active" ? "stop" : "start";
     const routed = asRecord(asRecord(capabilities.network_contexts).routed);
     if (action === "start" && String(context.transport) === "routed" && routed.enabled !== true) {
-      const manifest = asRecord(routed.manifest);
-      setMessage(`Ligolo indisponível: ${String(manifest.reason ?? "verifique os requisitos em Diagnóstico")}`);
+      setMessage(`Ligolo indisponível: ${String(routed.reason ?? "verifique os requisitos em Diagnóstico")}`);
       return;
     }
     try {
@@ -503,7 +502,7 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
       const updated = await request<Json>(`/contexts/${String(context.id)}/namespace/${action}`, requestOptions);
       setContexts(current => current.map(item => item.id === updated.id ? updated : item));
       setNamespacePlan(null);
-      setMessage(action === "prepare" ? "Namespace preparado; o transporte continua parado." : "Namespace removido.");
+      setMessage(action === "prepare" ? "Preparação legada concluída; use Acessar rede para o transporte completo." : "Recursos antigos removidos.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -560,14 +559,14 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
       </> : <div className="empty large"><div className="empty-icon">⇄</div><strong>Selecione um serviço com porta</strong><span>Caminhos de rede sem uma porta específica não são apresentados como um túnel.</span></div>}
     </section>
     <section className="panel span-two">
-      <PanelHeader title="Contextos de rede" subtitle="SOCKS e roteamento permanecem explícitos e independentes" />
+      <PanelHeader title="Contextos de rede" subtitle="SOCKS e acesso roteado mostram transporte, dependências e estado real" />
       {Object.keys(capabilities).length > 0 && asRecord(asRecord(capabilities.network_contexts).routed).enabled !== true && <div className="notice-message">Roteamento Ligolo está indisponível neste motor. O modo SOCKS continua disponível.<details><summary>Ver diagnóstico do adaptador</summary><pre className="plan-preview">{JSON.stringify(asRecord(asRecord(capabilities.network_contexts).routed), null, 2)}</pre></details></div>}
       {contexts.length ? contexts.map(context => <div className="list-row" key={String(context.id)}>
         <div className="row-icon">⇄</div>
         <div className="row-main"><strong>{String(context.name)}</strong><small>{String(context.transport)} · {String(context.network_cidrs ?? "sem redes")}</small></div>
         <span className={`state ${String(context.status)}`}>{String(context.status)}</span>
-        <button className="button small secondary" disabled={String(context.status) !== "active" && String(context.transport) === "routed" && asRecord(asRecord(capabilities.network_contexts).routed).enabled !== true} title={String(context.transport) === "routed" ? "Disponível somente após validar o adaptador Ligolo" : undefined} onClick={() => void toggleContext(context)}>{String(context.status) === "active" ? "Parar" : "Iniciar"}</button>
-        {String(context.transport) === "routed" && (Array.isArray(context.resource_manifest) && context.resource_manifest.length ? <button className="button small secondary" onClick={() => void namespaceAction(context, "remove")}>Remover namespace</button> : <button className="button small secondary" onClick={() => void reviewNamespace(context)}>Revisar namespace</button>)}
+        <button className="button small secondary" disabled={String(context.status) !== "active" && String(context.transport) === "routed" && asRecord(asRecord(capabilities.network_contexts).routed).enabled !== true} title={String(context.transport) === "routed" ? "Prepara o proxy, agente, TUN e somente as rotas selecionadas" : undefined} onClick={() => void toggleContext(context)}>{String(context.status) === "active" ? (String(context.transport) === "routed" ? "Encerrar acesso" : "Parar") : (String(context.transport) === "routed" ? "Acessar rede" : "Iniciar")}</button>
+        {String(context.transport) === "routed" && String(context.health ?? "").startsWith("namespace_prepared") && <button className="button small secondary" onClick={() => void namespaceAction(context, "remove")}>Limpar preparação antiga</button>}
       </div>) : <Empty text="Nenhum contexto planejado" />}
     </section>
     {namespacePlan && <section className="panel span-two">

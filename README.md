@@ -282,10 +282,16 @@ explicit view sharing. Only one observer controls input at a time.
 - Conduit does not install persistence, perform brute force, or start automatic exploitation.
 - `proxychains` is limited to programs compatible with TCP proxying; it is not full traffic
   isolation.
-- The Ligolo-ng routed context is experimental and remains disabled when the adapter version is
-  not pinned and validated.
-- The privileged namespace helper accepts typed operations; it does not execute arbitrary shell
-  commands.
+- The Ligolo-ng routed context is an opt-in experimental adapter pinned to 0.9.1. It requires the
+  separately installed namespace helper and a verified `CAP_NET_ADMIN` proxy binary. When those
+  prerequisites are missing, the button is disabled with the exact diagnostic instead of showing
+  a false success.
+- When enabled, Conduit creates one private namespace and veth pair per context, starts the
+  verified proxy as the restricted `ctfws` user, uploads the matching remote agent over SFTP, and
+  installs only the selected routes. It never changes the Kali default route or global DNS.
+- The privileged namespace helper accepts typed namespace/runtime operations; it does not execute
+  arbitrary shell commands. The Ligolo API is kept on the context-local link and uses a temporary
+  credential.
 
 ## Linux service installation
 
@@ -306,6 +312,17 @@ not create a local account automatically. After login, open **Settings → Accou
 username, a password of at least 12 characters, and a role, then click **Create account**. Use
 **Operator** for normal authorized operations, **Observer** for read-only access, and **Administrator**
 only for account and policy management. Public self-registration is intentionally disabled.
+
+Routed access is deliberately not enabled by the installer itself because it grants the optional
+helper network administration capabilities. After reviewing the host policy, enable it with:
+
+```bash
+sudo systemctl enable --now ctfws-namespace-helper.service
+sudo systemctl restart ctfws.service
+```
+
+The **Acessos** page will then expose **Acessar rede** only when the helper, proxy capability,
+manifest checksums, and SSH forwarding prerequisites are all healthy.
 
 New SSH hosts are also handled interactively. Conduit stops before authentication, shows the host
 key type and SHA-256 fingerprint, and asks for an explicit confirmation. Verify the fingerprint

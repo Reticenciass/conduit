@@ -289,7 +289,8 @@ def test_socks_context_generates_scoped_launchers_without_execution(workspace, m
     routed_plan = service.launcher_plan(
         routed.id, "nmap", ("-sT", "10.30.0.0/24"), launcher="namespace"
     )
-    assert routed_plan["argv"][:4] == ["ip", "netns", "exec", routed_namespace]
+    assert routed_plan["argv"] == ["nmap", "-sT", "10.30.0.0/24"]
+    assert routed_plan["execution"] == "context-worker"
 
     execution = service.execute_launcher(
         context.id,
@@ -447,6 +448,20 @@ def test_routed_namespace_plan_is_typed_and_workspace_scoped(workspace) -> None:
                 namespace,
             )
         )
+
+
+def test_routed_runtime_allocates_isolated_link_per_context(workspace) -> None:
+    helper = RoutedNamespaceHelper(workspace)
+    first = helper.runtime_addresses(1)
+    second = helper.runtime_addresses(2)
+    assert first != second
+    assert first == ("169.254.0.1", "169.254.0.2")
+    assert second == ("169.254.0.5", "169.254.0.6")
+    resources = helper.runtime_resources(1)
+    assert "veth-host:" in " ".join(resources)
+    assert "address-namespace:" in " ".join(resources)
+    with pytest.raises(ValueError, match="limite"):
+        helper.runtime_addresses(16385)
 
 
 def test_routed_namespace_batches_are_atomic_and_cleanup_is_reversed(workspace) -> None:

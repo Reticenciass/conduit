@@ -24,8 +24,13 @@ from ctfws.models.context import (
 )
 from ctfws.pivot.manifest import ligolo_manifest_status
 from ctfws.services.connections import ConnectionService
+from ctfws.services.ligolo_runtime import LigoloRuntime
 from ctfws.services.ports import PortLease
-from ctfws.services.routed_helper import RoutedNamespaceHelper
+from ctfws.services.routed_helper import (
+    RoutedCommandSpec,
+    RoutedNamespaceHelper,
+    RoutedProxyStopSpec,
+)
 from ctfws.services.workspace import WorkspaceService
 
 
@@ -36,6 +41,7 @@ class NetworkContextService:
         self.workspace = workspace
         self.ssh_manager = ssh_manager
         self._listeners: dict[int, Any] = {}
+        self._routed_sessions: dict[int, Any] = {}
         self._operation_locks: dict[int, asyncio.Lock] = {}
         self.routed_helper = RoutedNamespaceHelper(workspace)
 
@@ -55,6 +61,8 @@ class NetworkContextService:
         """Start a SOCKS listener owned by this motor when AsyncSSH is available."""
 
         context = self._get(context_id)
+        if context.transport == ContextTransport.ROUTED:
+            return await self._start_routed_async(context)
         if (
             not self.async_available
             or context.transport != ContextTransport.SOCKS
@@ -120,10 +128,46 @@ class NetworkContextService:
     async def _stop_async_unlocked(self, context_id: int) -> NetworkContextRead:
         """Stop only the listener owned by the selected SOCKS context."""
 
+        context = self._get(context_id)
+        if context.transport == ContextTransport.ROUTED:
+            session = self._routed_sessions.pop(context_id, None)
+            if session is None:
+                return await asyncio.to_thread(self.stop, context_id)
+            try:
+                await LigoloRuntime(self.workspace, self.ssh_manager, self.routed_helper).stop(
+                    session
+                )
+            except Exception as error:
+                return self.workspace.contexts.update_runtime(
+                    context_id,
+                    status=ContextStatus.ERROR,
+                    health="routed_stop_unconfirmed",
+                    error=str(error)[:1000],
+                )
+            stopped = self.workspace.contexts.update_runtime(
+                context_id,
+                status=ContextStatus.STOPPED,
+                pid=None,
+                error=None,
+                health="stopped;runtime_cleaned",
+                capabilities=(),
+                clear_engine_id=True,
+                clear_process_identity=True,
+                clear_namespace=True,
+                resource_manifest=(),
+            )
+            self.workspace._emit(
+                Event(
+                    event_type="NETWORK_CONTEXT_STOPPED",
+                    message=f"Context {context.name} stopped",
+                    entity_type="network_context",
+                    entity_id=context.id,
+                )
+            )
+            return stopped
         listener = self._listeners.pop(context_id, None)
         if listener is None:
             return await asyncio.to_thread(self.stop, context_id)
-        context = self._get(context_id)
         try:
             listener.close()
             wait_closed = getattr(listener, "wait_closed", None)
@@ -146,6 +190,7 @@ class NetworkContextService:
             health="stopped",
             capabilities=(),
             clear_engine_id=True,
+            clear_process_identity=True,
         )
         self.workspace.port_leases.release_for("context", context_id)
         self.workspace._emit(
@@ -163,6 +208,8 @@ class NetworkContextService:
 
         for context_id in list(self._listeners):
             await self.stop_async(context_id)
+        for context_id in list(self._routed_sessions):
+            await self.stop_async(context_id)
 
     def capabilities(self) -> dict[str, object]:
         helper = self.routed_helper.capabilities()
@@ -171,15 +218,20 @@ class NetworkContextService:
         ligolo_proxy_path = manifest.proxy_path or shutil.which("ligolo-proxy")
         ligolo_agent_available = ligolo_agent_path is not None and Path(ligolo_agent_path).is_file()
         ligolo_proxy_available = ligolo_proxy_path is not None and Path(ligolo_proxy_path).is_file()
-        # The manifest and helper prove that prerequisites exist; they do not
-        # prove that this motor can safely orchestrate proxy, agent, TUN,
-        # routes, DNS and cleanup as one transaction. Keep the routed button
-        # disabled until that runtime contract is implemented and tested.
-        routed_runtime_supported = False
-        routed_reason = (
-            "o adaptador Ligolo está identificado, mas a orquestração isolada "
-            "de proxy, agente, TUN e limpeza ainda não está habilitada neste motor"
-        )
+        runtime = helper.get("runtime")
+        runtime_available = isinstance(runtime, dict) and bool(runtime.get("available"))
+        proxy_capable = isinstance(runtime, dict) and bool(runtime.get("proxy_net_admin"))
+        routed_runtime_supported = runtime_available and proxy_capable
+        routed_reason = "runtime isolado pronto"
+        if os.getenv("CTFWS_ENABLE_ROUTED_CONTEXTS") != "1":
+            routed_runtime_supported = False
+            routed_reason = "habilite CTFWS_ENABLE_ROUTED_CONTEXTS=1 após revisar o helper"
+        elif not runtime_available:
+            routed_reason = "helper privilegiado indisponível; habilite ctfws-namespace-helper"
+        elif not proxy_capable:
+            routed_reason = "ligolo-proxy não possui CAP_NET_ADMIN no runtime gerenciado"
+        elif not manifest.valid or not manifest.binary_verified:
+            routed_reason = manifest.reason
         return {
             "socks": True,
             "routed": {
@@ -219,6 +271,64 @@ class NetworkContextService:
             },
         }
 
+    async def _start_routed_async(self, context: NetworkContextRead) -> NetworkContextRead:
+        """Start the real isolated Ligolo agent/proxy workflow."""
+
+        if context.status == ContextStatus.ACTIVE and context.id in self._routed_sessions:
+            return context
+        routed = self.capabilities()["routed"]
+        if not isinstance(routed, dict) or routed.get("enabled") is not True:
+            reason = (
+                routed.get("reason") if isinstance(routed, dict) else "diagnóstico indisponível"
+            )
+            return self.workspace.contexts.update_runtime(
+                context.id,
+                status=ContextStatus.ERROR,
+                health="routed_unavailable",
+                capabilities=(),
+                error=f"Contexto roteado indisponível: {reason}",
+            )
+        self.workspace.contexts.update_runtime(
+            context.id,
+            status=ContextStatus.STARTING,
+            error=None,
+            health="preparing_runtime",
+            capabilities=(),
+            engine_id=self.workspace.engine_id,
+        )
+        runtime = LigoloRuntime(self.workspace, self.ssh_manager, self.routed_helper)
+        try:
+            session = await runtime.start(context)
+        except Exception as error:
+            return self.workspace.contexts.update_runtime(
+                context.id,
+                status=ContextStatus.ERROR,
+                health="routed_start_failed",
+                capabilities=(),
+                error=str(error)[:1000],
+                engine_id=self.workspace.engine_id,
+            )
+        self._routed_sessions[context.id] = session
+        identity = process_identity(session.proxy.pid)
+        return self.workspace.contexts.update_runtime(
+            context.id,
+            status=ContextStatus.ACTIVE,
+            pid=session.proxy.pid,
+            process_started_at=(
+                datetime.fromtimestamp(identity.create_time, UTC).isoformat()
+                if identity is not None and identity.create_time is not None
+                else None
+            ),
+            process_executable=session.proxy.executable,
+            process_fingerprint=session.proxy.command_fingerprint,
+            namespace_name=session.spec.namespace,
+            resource_manifest=self.routed_helper.runtime_resources(context.id),
+            health="proxy_ready;agent_connected;tun_ready;routes_installed",
+            capabilities=("routed", "ligolo", "namespace", "routes", "dns-context"),
+            error=None,
+            engine_id=self.workspace.engine_id,
+        )
+
     def launcher_plan(
         self,
         context_id: int,
@@ -241,7 +351,16 @@ class NetworkContextService:
                 raise ValueError("O namespace do contexto ainda não foi preparado pelo helper.")
             if context.status not in {ContextStatus.ACTIVE, ContextStatus.DEGRADED}:
                 raise ValueError("Prepare e inicie o contexto roteado antes de gerar um launcher.")
-            argv = ("ip", "netns", "exec", namespace, program, *arguments)
+            self.routed_helper._validate_command_spec(  # noqa: SLF001 - shared safety boundary
+                RoutedCommandSpec(
+                    self.workspace.lab.id,
+                    context.id,
+                    namespace,
+                    program,
+                    arguments,
+                )
+            )
+            argv = (program, *arguments)
             return {
                 "context_id": context.id,
                 "context_name": context.name,
@@ -251,9 +370,10 @@ class NetworkContextService:
                 "environment": {},
                 "config_path": None,
                 "endpoint": None,
+                "execution": "context-worker",
                 "limitations": [
-                    "o namespace e suas rotas precisam ter sido preparados pelo helper tipado",
-                    "a ferramenta é executada sem privilégios elevados após o preparo",
+                    "somente ferramentas de rede suportadas pelo worker contextual",
+                    "a ferramenta é executada como ctfws, sem privilégios elevados",
                 ],
             }
         if context.transport != ContextTransport.SOCKS:
@@ -319,6 +439,31 @@ class NetworkContextService:
         if not 1 <= timeout_seconds <= 3600:
             raise ValueError("O tempo limite precisa estar entre 1 e 3600 segundos.")
         plan = self.launcher_plan(context_id, program, arguments, launcher=launcher)
+        context = self._get(context_id)
+        if context.transport == ContextTransport.ROUTED:
+            result = self.routed_helper.execute_command(
+                RoutedCommandSpec(
+                    self.workspace.lab.id,
+                    context.id,
+                    self.routed_helper.namespace_for(context.id),
+                    program,
+                    arguments,
+                    timeout_seconds,
+                )
+            )
+            return {
+                "context_id": context_id,
+                "launcher": launcher,
+                "argv": list(arguments),
+                "returncode": result.returncode,
+                "timed_out": result.timed_out,
+                "output": result.output,
+                "output_truncated": result.output_truncated,
+                "failed_steps": (
+                    ["execution"] if result.timed_out or result.returncode not in {0, None} else []
+                ),
+                "limitations": plan.get("limitations", []),
+            }
         raw_argv = plan.get("argv")
         raw_environment = plan.get("environment")
         if not isinstance(raw_argv, list) or not all(isinstance(item, str) for item in raw_argv):
@@ -395,6 +540,8 @@ class NetworkContextService:
 
     def plan(self, data: NetworkContextCreate) -> NetworkContextRead:
         self._validate_networks(data.network_cidrs)
+        if data.transport == ContextTransport.ROUTED and not data.network_cidrs:
+            raise ValueError("Um contexto roteado exige ao menos uma rede selecionada.")
         lease: PortLease | None = None
         if data.transport == ContextTransport.SOCKS:
             if data.connection_id is None:
@@ -435,6 +582,18 @@ class NetworkContextService:
         if context.status == ContextStatus.ACTIVE:
             return context
         if context.transport == ContextTransport.ROUTED:
+            if self.async_available:
+                try:
+                    return asyncio.run(self.start_async(context_id))
+                except RuntimeError as error:
+                    if "cannot be called from a running event loop" not in str(error):
+                        return self.workspace.contexts.update_runtime(
+                            context_id,
+                            status=ContextStatus.ERROR,
+                            health="routed_start_failed",
+                            capabilities=(),
+                            error=str(error)[:1000],
+                        )
             routed = self.capabilities()["routed"]
             assert isinstance(routed, dict)
             return self.workspace.contexts.update_runtime(
@@ -629,6 +788,54 @@ class NetworkContextService:
 
     def stop(self, context_id: int) -> NetworkContextRead:
         context = self._get(context_id)
+        if context.transport == ContextTransport.ROUTED:
+            if context.pid is not None:
+                manifest = ligolo_manifest_status()
+                try:
+                    self.routed_helper.stop_proxy(
+                        RoutedProxyStopSpec(
+                            self.workspace.lab.id,
+                            context.id,
+                            context.namespace_name or self.routed_helper.namespace_for(context.id),
+                            context.pid,
+                            (
+                                context.process_started_at.timestamp()
+                                if context.process_started_at is not None
+                                else None
+                            ),
+                            context.process_executable or manifest.proxy_path,
+                            context.process_fingerprint,
+                        )
+                    )
+                except Exception as error:
+                    return self.workspace.contexts.update_runtime(
+                        context_id,
+                        status=ContextStatus.ERROR,
+                        health="routed_stop_unconfirmed",
+                        error=str(error)[:1000],
+                    )
+            if context.resource_manifest:
+                try:
+                    self.routed_helper.remove_runtime(context.id, context.resource_manifest)
+                except Exception as error:
+                    return self.workspace.contexts.update_runtime(
+                        context_id,
+                        status=ContextStatus.ERROR,
+                        health="routed_cleanup_pending",
+                        error=str(error)[:1000],
+                    )
+            return self.workspace.contexts.update_runtime(
+                context_id,
+                status=ContextStatus.STOPPED,
+                pid=None,
+                error=None,
+                health="stopped;runtime_cleaned",
+                capabilities=(),
+                clear_engine_id=True,
+                clear_process_identity=True,
+                clear_namespace=True,
+                resource_manifest=(),
+            )
         if context.pid is not None:
             identity = process_identity(context.pid)
             expected_start = (
@@ -684,6 +891,7 @@ class NetworkContextService:
             health="stopped",
             capabilities=(),
             clear_engine_id=True,
+            clear_process_identity=True,
         )
         self.workspace.port_leases.release_for("context", context_id)
         self.workspace._emit(

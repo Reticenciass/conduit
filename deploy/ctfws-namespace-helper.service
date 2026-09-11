@@ -21,9 +21,9 @@ ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectControlGroups=true
 ReadWritePaths=/var/lib/ctfws /run/ctfws /run/netns
-RestrictAddressFamilies=AF_UNIX
-CapabilityBoundingSet=CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_ADMIN
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN
 
 [Install]
 WantedBy=multi-user.target

@@ -37,8 +37,10 @@ trap 'rm -rf -- "${ligolo_tmp}"' EXIT
 ligolo_base="https://github.com/nicocha30/ligolo-ng/releases/download/v${ligolo_version}"
 ligolo_checksums="ligolo-ng_${ligolo_version}_checksums.txt"
 curl -fsSL --proto '=https' --tlsv1.2 "${ligolo_base}/${ligolo_checksums}" -o "${ligolo_tmp}/${ligolo_checksums}"
-for ligolo_role in agent proxy; do
-  ligolo_asset="ligolo-ng_${ligolo_role}_${ligolo_version}_linux_${ligolo_platform}.tar.gz"
+download_ligolo_asset() {
+  local ligolo_role="$1"
+  local ligolo_asset_platform="$2"
+  local ligolo_asset="ligolo-ng_${ligolo_role}_${ligolo_version}_linux_${ligolo_asset_platform}.tar.gz"
   curl -fsSL --proto '=https' --tlsv1.2 "${ligolo_base}/${ligolo_asset}" -o "${ligolo_tmp}/${ligolo_asset}"
   ligolo_expected="$(awk -v asset="${ligolo_asset}" '$2 == asset { print $1 }' "${ligolo_tmp}/${ligolo_checksums}")"
   if [[ ! "${ligolo_expected}" =~ ^[0-9a-fA-F]{64}$ ]]; then
@@ -46,7 +48,10 @@ for ligolo_role in agent proxy; do
     exit 1
   fi
   printf '%s  %s\n' "${ligolo_expected}" "${ligolo_tmp}/${ligolo_asset}" | sha256sum -c -
-done
+}
+download_ligolo_asset agent amd64
+download_ligolo_asset agent arm64
+download_ligolo_asset proxy "${ligolo_platform}"
 install -d -m 0755 "${ligolo_root}"
 for ligolo_role in agent proxy; do
   ligolo_asset="ligolo-ng_${ligolo_role}_${ligolo_version}_linux_${ligolo_platform}.tar.gz"
@@ -54,14 +59,26 @@ for ligolo_role in agent proxy; do
   tar -xzf "${ligolo_tmp}/${ligolo_asset}" -C "${ligolo_tmp}/${ligolo_role}"
   install -m 0755 "${ligolo_tmp}/${ligolo_role}/${ligolo_role}" "${ligolo_root}/ligolo-${ligolo_role}"
 done
+for agent_platform in amd64 arm64; do
+  install -d -m 0755 "${ligolo_tmp}/agent-${agent_platform}"
+  tar -xzf "${ligolo_tmp}/ligolo-ng_agent_${ligolo_version}_linux_${agent_platform}.tar.gz" -C "${ligolo_tmp}/agent-${agent_platform}"
+  install -d -m 0755 "${ligolo_root}/agents/linux-${agent_platform}"
+  install -m 0755 "${ligolo_tmp}/agent-${agent_platform}/agent" "${ligolo_root}/agents/linux-${agent_platform}/ligolo-agent"
+done
 ligolo_agent_path="${ligolo_root}/ligolo-agent"
 ligolo_proxy_path="${ligolo_root}/ligolo-proxy"
+ligolo_agent_amd64_path="${ligolo_root}/agents/linux-amd64/ligolo-agent"
+ligolo_agent_arm64_path="${ligolo_root}/agents/linux-arm64/ligolo-agent"
 ligolo_manifest_path="/etc/ctfws/ligolo-compatibility.toml"
 ligolo_agent_sha256="$(sha256sum "${ligolo_agent_path}" | awk '{ print $1 }')"
 ligolo_proxy_sha256="$(sha256sum "${ligolo_proxy_path}" | awk '{ print $1 }')"
+ligolo_agent_amd64_sha256="$(sha256sum "${ligolo_agent_amd64_path}" | awk '{ print $1 }')"
+ligolo_agent_arm64_sha256="$(sha256sum "${ligolo_agent_arm64_path}" | awk '{ print $1 }')"
 sed \
   -e "s|^agent_sha256 =.*|agent_sha256 = \"${ligolo_agent_sha256}\"|" \
   -e "s|^proxy_sha256 =.*|proxy_sha256 = \"${ligolo_proxy_sha256}\"|" \
+  -e "s|^agent_linux_amd64_sha256 =.*|agent_linux_amd64_sha256 = \"${ligolo_agent_amd64_sha256}\"|" \
+  -e "s|^agent_linux_arm64_sha256 =.*|agent_linux_arm64_sha256 = \"${ligolo_agent_arm64_sha256}\"|" \
   "${project_dir}/deploy/compatibility.toml" > "${ligolo_manifest_path}"
 chown ctfws:ctfws "${ligolo_manifest_path}"
 chmod 0640 "${ligolo_manifest_path}"
@@ -125,6 +142,15 @@ chown -R ctfws:ctfws /opt/ctfws /var/lib/ctfws
 chmod 0755 /opt/ctfws /opt/ctfws/releases
 chmod 0750 /var/lib/ctfws /etc/ctfws
 
+# The proxy is executed as the restricted ctfws account inside a private
+# network namespace. CAP_NET_ADMIN is therefore attached to this managed
+# binary, never granted to the main web motor.
+if command -v setcap >/dev/null 2>&1; then
+  setcap cap_net_admin+ep "${ligolo_proxy_path}"
+else
+  echo "setcap não encontrado; contextos roteados permanecerão indisponíveis." >&2
+fi
+
 if [ ! -f /var/lib/ctfws/workspace/workspace.db ]; then
   runuser -u ctfws -- /opt/ctfws/.venv/bin/ctfws lab create workspace \
     --base-dir /var/lib/ctfws --platform linux
@@ -152,6 +178,15 @@ append_env CTFWS_LIGOLO_AGENT "${ligolo_agent_path}"
 append_env CTFWS_LIGOLO_PROXY "${ligolo_proxy_path}"
 append_env CTFWS_LIGOLO_AGENT_SHA256 "${ligolo_agent_sha256}"
 append_env CTFWS_LIGOLO_PROXY_SHA256 "${ligolo_proxy_sha256}"
+append_env CTFWS_LIGOLO_AGENT_AMD64 "${ligolo_agent_amd64_path}"
+append_env CTFWS_LIGOLO_AGENT_AMD64_SHA256 "${ligolo_agent_amd64_sha256}"
+append_env CTFWS_LIGOLO_AGENT_ARM64 "${ligolo_agent_arm64_path}"
+append_env CTFWS_LIGOLO_AGENT_ARM64_SHA256 "${ligolo_agent_arm64_sha256}"
+# The feature still requires the separately reviewed helper service. Keeping
+# this switch in the service environment makes the capability visible as soon
+# as the administrator enables that component, without enabling root network
+# operations during installation.
+append_env CTFWS_ENABLE_ROUTED_CONTEXTS "1"
 chmod 0600 /etc/ctfws/ctfws.env
 chown ctfws:ctfws /etc/ctfws/ctfws.env
 
