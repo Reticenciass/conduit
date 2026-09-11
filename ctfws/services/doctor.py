@@ -92,7 +92,7 @@ class WorkspaceDoctor:
                 )
             )
 
-        for package in ("textual", "fastapi", "uvicorn"):
+        for package in ("textual", "fastapi", "uvicorn", "websockets"):
             checks.append(
                 DoctorCheck(
                     f"python:{package}",
