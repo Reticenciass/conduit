@@ -56,9 +56,29 @@ def ligolo_manifest_status(path: Path | None = None) -> LigoloManifestStatus:
 
     selected_path = path or _configured_path()
     reported_version = os.getenv("CTFWS_LIGOLO_VERSION") or None
-    if selected_path is None or not selected_path.is_file():
+    if selected_path is None:
         return LigoloManifestStatus(
-            str(selected_path) if selected_path else None,
+            None,
+            None,
+            None,
+            reported_version,
+            False,
+            "manifesto Ligolo não encontrado",
+        )
+    try:
+        manifest_exists = selected_path.is_file()
+    except OSError as error:
+        return LigoloManifestStatus(
+            str(selected_path),
+            None,
+            None,
+            reported_version,
+            False,
+            f"não foi possível acessar o manifesto Ligolo: {error}",
+        )
+    if not manifest_exists:
+        return LigoloManifestStatus(
+            str(selected_path),
             None,
             None,
             reported_version,
@@ -296,7 +316,12 @@ def _configured_path() -> Path | None:
     if configured:
         return Path(configured).expanduser().resolve()
     installed = Path("/etc/ctfws/ligolo-compatibility.toml")
-    if installed.is_file():
+    try:
+        if installed.is_file():
+            return installed
+    except OSError:
+        # Return the configured location so the caller can surface a clear
+        # permission/IO diagnostic instead of raising during capabilities.
         return installed
     candidate = Path(__file__).resolve().parents[2] / "deploy" / "compatibility.toml"
     return candidate if candidate.is_file() else None

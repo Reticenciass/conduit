@@ -11,6 +11,10 @@ install -d -m 0750 /var/lib/ctfws /var/lib/ctfws/workspace /etc/ctfws
 if ! id -u ctfws >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/ctfws --shell /usr/sbin/nologin ctfws
 fi
+# The unprivileged motor reads the pinned manifest at runtime. Keep the
+# directory non-writable to the service while allowing its owner/group to
+# traverse it; the privileged helper remains independently sandboxed.
+chown ctfws:ctfws /etc/ctfws
 python3 -m venv /opt/ctfws/.venv
 /opt/ctfws/.venv/bin/python -m pip install --upgrade pip
 # Install a wheel, not an editable checkout.  The systemd service runs as the
