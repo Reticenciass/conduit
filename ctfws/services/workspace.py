@@ -47,6 +47,9 @@ class WorkspaceService:
 
     def __init__(self, paths: WorkspacePaths, bus: EventBus | None = None) -> None:
         self.paths = paths
+        # Older workspaces may have a valid database but no operational
+        # directories yet. Recreate the safe layout before any service uses it.
+        self.paths.ensure_layout()
         self.database = Database(paths.database)
         self.database.initialize()
         lab = LabRepository(self.database).get()

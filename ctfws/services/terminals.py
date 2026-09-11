@@ -100,6 +100,12 @@ class TerminalManager:
             raise EntityNotFoundError(f"Terminal {terminal_id} não encontrado.")
         return terminal
 
+    def runtime_available(self, terminal_id: int) -> bool:
+        """Return whether this motor still owns the live terminal session."""
+
+        with self._lock:
+            return terminal_id in self._terminals
+
     async def start_async(
         self, data: TerminalCreate, owner_subject: str | None = None
     ) -> TerminalRead:
@@ -346,6 +352,13 @@ class TerminalManager:
                 return True
             return False
 
+    def has_control(self, terminal_id: int, token: str) -> bool:
+        """Return whether a viewer currently owns input control."""
+
+        runtime = self._runtime(terminal_id)
+        with self._lock:
+            return runtime.control_owner == token
+
     def resize(self, terminal_id: int, columns: int, rows: int) -> None:
         """Resize a POSIX PTY; Windows pipe terminals ignore the request."""
 
@@ -378,7 +391,22 @@ class TerminalManager:
         return self._is_drained_runtime(self._runtime(terminal_id))
 
     def close(self, terminal_id: int) -> TerminalRead:
-        runtime = self._runtime(terminal_id)
+        try:
+            runtime = self._runtime(terminal_id)
+        except EntityNotFoundError:
+            # A historical terminal has no process to kill. Marking its
+            # record closed keeps the UI action idempotent and preserves the
+            # original lifecycle in the database.
+            current = self.workspace.terminals.get(terminal_id)
+            if current is None:
+                raise
+            return self.workspace.terminals.update_runtime(
+                terminal_id,
+                status=TerminalStatus.CLOSED,
+                pid=None,
+                exit_code=current.exit_code,
+                clear_engine_id=True,
+            )
         runtime.stopping = True
         if runtime.remote_process is not None:
             self._close_remote_sync(runtime)

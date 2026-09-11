@@ -1512,7 +1512,22 @@ def create_app(paths: WorkspacePaths) -> Any:
     @app.get("/api/v2/workspaces/{workspace_id}/terminals")
     def terminal_list(workspace_id: int | None = None) -> list[dict[str, Any]]:
         require_workspace(workspace_id)
-        return [terminal.model_dump(mode="json") for terminal in terminals.list()]
+        result = []
+        for terminal in terminals.list():
+            payload = terminal.model_dump(mode="json")
+            available = terminals.runtime_available(terminal.id)
+            payload["runtime_available"] = available
+            payload["reconnectable"] = not available and terminal.connection_id is not None
+            if available:
+                payload["availability_reason"] = None
+            elif terminal.status.value == "closed":
+                payload["availability_reason"] = "Terminal encerrado pelo operador."
+            elif terminal.status.value == "exited":
+                payload["availability_reason"] = "A sessão terminou ou o motor foi reiniciado."
+            else:
+                payload["availability_reason"] = "A sessão não está presente no motor atual."
+            result.append(payload)
+        return result
 
     @app.post("/api/v1/terminals", status_code=201)
     @app.post("/api/v2/workspaces/{workspace_id}/terminals", status_code=201)
@@ -1532,7 +1547,18 @@ def create_app(paths: WorkspacePaths) -> Any:
     def terminal_get(terminal_id: int, workspace_id: int | None = None) -> dict[str, Any]:
         require_workspace(workspace_id)
         try:
-            return terminals.get(terminal_id).model_dump(mode="json")
+            terminal = terminals.get(terminal_id)
+            payload = terminal.model_dump(mode="json")
+            payload["runtime_available"] = terminals.runtime_available(terminal.id)
+            payload["reconnectable"] = (
+                not payload["runtime_available"] and terminal.connection_id is not None
+            )
+            payload["availability_reason"] = (
+                None
+                if payload["runtime_available"]
+                else "A sessão não está presente no motor atual."
+            )
+            return payload
         except Exception as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -1626,6 +1652,22 @@ def create_app(paths: WorkspacePaths) -> Any:
         except Exception:
             await websocket.close(code=4404)
             return
+        if not terminals.runtime_available(terminal_id):
+            await websocket.accept(subprotocol="ctfws" if protocols[:1] == ["ctfws"] else None)
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "terminal_not_active",
+                    "message": (
+                        terminal.availability_reason
+                        or "Este terminal não possui uma sessão ativa no motor."
+                    ),
+                    "reconnectable": terminal.connection_id is not None,
+                    "connection_id": terminal.connection_id,
+                }
+            )
+            await websocket.close(code=4409, reason="terminal_not_active")
+            return
         if role == "observer" and terminal.sharing.value != "shared":
             await websocket.close(code=4403)
             return
@@ -1633,7 +1675,20 @@ def create_app(paths: WorkspacePaths) -> Any:
         raw_sequence = websocket.query_params.get("after_sequence", "0")
         after_sequence = int(raw_sequence) if raw_sequence.isdigit() else 0
         read_only = websocket.query_params.get("readonly", "0") == "1"
-        viewer_token = terminals.subscribe(terminal_id, after_sequence=after_sequence)
+        try:
+            viewer_token = terminals.subscribe(terminal_id, after_sequence=after_sequence)
+        except EntityNotFoundError:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "terminal_not_active",
+                    "message": "A sessão deixou de existir no motor antes da visualização iniciar.",
+                    "reconnectable": terminal.connection_id is not None,
+                    "connection_id": terminal.connection_id,
+                }
+            )
+            await websocket.close(code=4409, reason="terminal_not_active")
+            return
         has_control = False
         if role != "observer" and not read_only:
             has_control = terminals.acquire_control(terminal_id, viewer_token)
@@ -1690,11 +1745,20 @@ def create_app(paths: WorkspacePaths) -> Any:
                                 if not isinstance(payload, dict):
                                     raise ValueError("Mensagem de terminal inválida.")
                                 if payload.get("action") == "resize":
-                                    terminals.resize(
-                                        terminal_id,
-                                        int(payload.get("columns", 80)),
-                                        int(payload.get("rows", 24)),
-                                    )
+                                    if (
+                                        role == "observer"
+                                        or read_only
+                                        or not terminals.has_control(terminal_id, viewer_token)
+                                    ):
+                                        await websocket.send_json(
+                                            {"type": "error", "code": "control_held"}
+                                        )
+                                    else:
+                                        terminals.resize(
+                                            terminal_id,
+                                            int(payload.get("columns", 80)),
+                                            int(payload.get("rows", 24)),
+                                        )
                                     text = ""
                                 elif payload.get("action") == "control":
                                     acquired = (

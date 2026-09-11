@@ -9,7 +9,7 @@ import "./styles.css";
 type View = "overview" | "machines" | "terminals" | "tunnels" | "files" | "tools" | "activity" | "settings";
 type Json = Record<string, unknown>;
 type Profile = Json & { id: number; name: string; host: string; user: string; port: number; state: string };
-type TerminalRow = Json & { id: number; name?: string; context_label: string; status: string; sharing?: string };
+type TerminalRow = Json & { id: number; name?: string; context_label: string; status: string; sharing?: string; connection_id?: number; runtime_available?: boolean; reconnectable?: boolean; availability_reason?: string | null };
 type CredentialKind = "password" | "key_passphrase";
 type HostKeyRequest = { connectionId: number; password?: string; credentialKind?: CredentialKind; hostKey: Json };
 
@@ -262,7 +262,7 @@ function App() {
         {connectionOpen && <ConnectionPanel onClose={() => setConnectionOpen(false)} onSaved={(id, password, inspectAfterSave, credentialKind) => { setConnectionOpen(false); void refresh(); if (inspectAfterSave) void testAndInspect(id, password, credentialKind); }} />}
         {view === "overview" && <Overview summary={summary} profiles={profiles} terminals={terminals} paths={paths} onConnect={() => setConnectionOpen(true)} onTerminal={(id) => void openTerminal(id)} onInspect={(id) => void inspect(id)} onLocal={() => void openTerminal()} />}
         {view === "machines" && <Machines hosts={hosts} profiles={profiles} onTerminal={(id) => void openTerminal(id)} onInspect={(id) => void inspect(id)} />}
-        {view === "terminals" && <TerminalView terminals={terminals} selected={terminalId} workspaceId={workspaceId} onSelect={setTerminalId} onLocal={() => void openTerminal()} onClose={(id) => void closeTerminal(id)} onShare={(id, shared) => void shareTerminal(id, shared)} onRename={(id, name) => void renameTerminal(id, name)} />}
+        {view === "terminals" && <TerminalView terminals={terminals} selected={terminalId} workspaceId={workspaceId} onSelect={setTerminalId} onLocal={() => void openTerminal()} onNewRemote={(id) => void openTerminal(id)} onClose={(id) => void closeTerminal(id)} onShare={(id, shared) => void shareTerminal(id, shared)} onRename={(id, name) => void renameTerminal(id, name)} />}
         {view === "tunnels" && <><ContextPlanner profiles={profiles} /><Tunnels paths={paths} profiles={profiles} /></>}
         {view === "files" && <Files profiles={profiles} setNotice={setNotice} />}
         {view === "tools" && <Tools profiles={profiles} setNotice={setNotice} />}
@@ -842,7 +842,7 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   return <div className="content-grid"><section className="panel"><PanelHeader title="Workspace / Kali" subtitle="Arquivos locais do motor" /><label>Conflito de destino<select value={conflict} onChange={event => setConflict(event.target.value)}><option value="cancel">Cancelar e pedir decisão</option><option value="keep_both">Manter ambos</option><option value="replace">Substituir explicitamente</option></select></label><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input type="file" multiple disabled={uploading} onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); event.target.value = ""; }} /><span className="drop-icon">↑</span><strong>{uploading ? "Enviando arquivos..." : "Arraste ou selecione arquivos"}</strong><small>Seleção múltipla, hash SHA-256 e finalização atômica.</small></label><div className="file-list">{files.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">▧</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><span className="muted">{String(file.size ?? "-")} bytes</span><button className="button small secondary" onClick={() => void registerEvidence(file)}>Registrar evidência</button>{remoteProfile > 0 && <button className="button small secondary" onClick={() => void uploadRemote(file)}>Enviar</button>}</div>)}</div></section><section className="panel"><PanelHeader title="Máquina remota" subtitle="Navegação via SFTP, sem shell remoto" />{profiles.length ? <><label>Conexão<select value={remoteProfile} onChange={event => setRemoteProfile(Number(event.target.value))}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.user}@{profile.host}</option>)}</select></label><label>Caminho remoto<input value={remotePath} onChange={event => setRemotePath(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browseRemote(); }} /></label><p className="muted">A política de conflito selecionada à esquerda também vale para downloads e uploads SFTP.</p><button className="button primary" onClick={() => void browseRemote()}>Navegar</button><div className="file-list">{remoteFiles.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">⇣</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><button className="button small secondary" onClick={() => void downloadRemote(file)}>Baixar</button></div>)}</div></> : <Empty text="Salve uma conexão SSH para navegar" />}</section></div>;
 }
 
-function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onClose, onShare, onRename }: { terminals: TerminalRow[]; selected: number | null; workspaceId: number | null; onSelect: (id: number | null) => void; onLocal: () => void; onClose: (id: number) => void; onShare: (id: number, shared: boolean) => void; onRename: (id: number, name: string) => void }) {
+function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onNewRemote, onClose, onShare, onRename }: { terminals: TerminalRow[]; selected: number | null; workspaceId: number | null; onSelect: (id: number | null) => void; onLocal: () => void; onNewRemote: (connectionId: number) => void; onClose: (id: number) => void; onShare: (id: number, shared: boolean) => void; onRename: (id: number, name: string) => void }) {
   const [attached, setAttached] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [renameOpen, setRenameOpen] = useState(false);
@@ -853,9 +853,10 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
   const row = terminals.find(item => item.id === selected);
   const splitRow = terminals.find(item => item.id === splitId);
   const splitCandidates = terminals.filter(item => item.id !== selected);
+  const terminalAvailable = Boolean(row && ["active", "starting"].includes(row.status) && row.runtime_available !== false);
   const recordSequence = useCallback((sequence: number) => { if (selected) lastSequences.current[selected] = sequence; }, [selected]);
   const submitRename = () => { if (selected && renameValue.trim()) { onRename(selected, renameValue.trim()); setRenameOpen(false); } };
-  const terminalViews = selected && attached ? <>{splitId && splitRow ? <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px", minHeight: "450px" }}><XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} /><XtermTerminal terminalId={splitId} workspaceId={workspaceId} afterSequence={lastSequences.current[splitId] ?? 0} searchTerm={searchTerm} readOnly onSequence={sequence => { lastSequences.current[splitId] = sequence; }} /></div> : <XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} />}</> : selected ? <div className="empty large"><div className="empty-icon">◌</div><strong>Visualização desconectada</strong><span>O processo continua sob controle do motor. Reconecte a visualização quando quiser.</span></div> : <div className="empty large"><div className="empty-icon">⌘</div><strong>Abra um terminal para começar</strong></div>;
+  const terminalViews = selected && attached && terminalAvailable ? <>{splitId && splitRow ? <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px", minHeight: "450px" }}><XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} /><XtermTerminal terminalId={splitId} workspaceId={workspaceId} afterSequence={lastSequences.current[splitId] ?? 0} searchTerm={searchTerm} readOnly onSequence={sequence => { lastSequences.current[splitId] = sequence; }} /></div> : <XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} />}</> : selected ? <div className="empty large"><div className="empty-icon">◌</div><strong>{row?.status === "closed" ? "Terminal encerrado" : "Sessão não está ativa"}</strong><span>{String(row?.availability_reason ?? "O motor não possui esta sessão em execução.")}</span>{row?.reconnectable && typeof row.connection_id === "number" && <button className="button primary" onClick={() => onNewRemote(row.connection_id as number)}>Abrir novo terminal nesta máquina</button>}</div> : <div className="empty large"><div className="empty-icon">⌘</div><strong>Abra um terminal para começar</strong></div>;
   return <div className="terminal-layout"><section className="panel terminal-tabs"><PanelHeader title="Terminais" action={<button className="text-button" onClick={onLocal}>+ Novo terminal</button>} />{terminals.map(item => <button className={selected === item.id ? "terminal-tab selected" : "terminal-tab"} key={item.id} onClick={() => onSelect(item.id)}><span>⌘</span><span><strong>{item.name ?? item.context_label}</strong><small>{item.context_label} · #{item.id} · {item.status} · {item.sharing === "shared" ? "compartilhado" : "privado"}</small></span></button>)}{!terminals.length && <Empty text="Nenhum terminal aberto" />}</section><section className="panel terminal-panel"><PanelHeader title={selected ? (row?.name ? String(row.name) : `Terminal #${selected}`) : "Selecione um terminal"} subtitle={row ? `${row.context_label} · ${row.sharing === "shared" ? "visualização compartilhada" : "visualização privada"} · saída não é gravada em disco por padrão` : "Escolha um terminal na lista"} action={selected ? <div className="panel-actions terminal-actions"><button className="button small secondary" onClick={() => onSelect(null)}>Ocultar</button><button className="button small secondary" onClick={() => setAttached(value => !value)}>{attached ? "Desconectar visualização" : "Reconectar visualização"}</button>{splitCandidates.length > 0 && <><button className="button small secondary" onClick={() => setSplitId(splitId ? null : splitCandidates[0].id)}>{splitId ? "Fechar divisão" : "Dividir tela"}</button>{!splitId && <select aria-label="Segundo terminal da divisão" value="" onChange={event => setSplitId(Number(event.target.value))}><option value="">Escolher segundo terminal…</option>{splitCandidates.map(item => <option key={item.id} value={item.id}>{item.name ?? item.context_label} · #{item.id}</option>)}</select>}</>}{row && <button className="button small secondary" onClick={() => { setRenameValue(String(row.name ?? "")); setRenameOpen(true); }}>{"Renomear"}</button>}{row && <button className="button small secondary" onClick={() => onShare(selected, row.sharing !== "shared")}>{row.sharing === "shared" ? "Tornar privado" : "Compartilhar visualização"}</button>}<button className="button small" onClick={() => onClose(selected)}>Encerrar</button></div> : undefined} />{selected && <div className="terminal-toolbar">{renameOpen && <><input aria-label="Novo nome do terminal" value={renameValue} onChange={event => setRenameValue(event.target.value)} onKeyDown={event => { if (event.key === "Enter") submitRename(); if (event.key === "Escape") setRenameOpen(false); }} /><button className="button small primary" onClick={submitRename}>Salvar nome</button><button className="button small secondary" onClick={() => setRenameOpen(false)}>Cancelar</button></>}<input aria-label="Buscar na saída" className="terminal-search" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Buscar na saída…" /></div>}{terminalViews}</section></div>;
 }
 
@@ -899,11 +900,13 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
      let pendingInputLength = 0;
      let disposed = false;
      let flushTimer: number | null = null;
+     let controlReady = workspaceId === null;
+     let hasControl = !readOnly;
      const maxPendingInput = 128 * 1024;
      const maxSocketBuffer = 1024 * 1024;
      const writeNotice = (message: string) => terminal.write(`\r\n\x1b[33m[Conduit] ${message}\x1b[0m\r\n`);
      const flushInput = () => {
-       if (socket.readyState !== WebSocket.OPEN) return;
+       if (socket.readyState !== WebSocket.OPEN || !controlReady || !hasControl) return;
        while (pendingInput.length && socket.bufferedAmount < maxSocketBuffer) {
          const data = pendingInput[0];
          if (!data) { pendingInput.shift(); continue; }
@@ -920,7 +923,7 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
        }
      };
      const sendInput = (data: string) => {
-       if (socket.readyState === WebSocket.OPEN && socket.bufferedAmount < maxSocketBuffer) {
+       if (socket.readyState === WebSocket.OPEN && controlReady && hasControl && socket.bufferedAmount < maxSocketBuffer) {
          try { socket.send(data); } catch { pendingInput.push(data); pendingInputLength += data.length; }
          flushInput();
          return;
@@ -934,7 +937,7 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
      };
      const resize = () => {
        fit.fit();
-       if (socket.readyState === WebSocket.OPEN) {
+       if (socket.readyState === WebSocket.OPEN && (!workspaceId || hasControl)) {
          try {
            socket.send(JSON.stringify({ action: "resize", columns: terminal.cols, rows: terminal.rows }));
          } catch { writeNotice("Não foi possível atualizar o tamanho do terminal."); }
@@ -942,7 +945,7 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
      };
      socket.onopen = () => {
        terminal.focus();
-       flushInput();
+       if (!workspaceId) flushInput();
        resize();
      };
      socket.onmessage = event => {
@@ -951,6 +954,16 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
            const metadata = JSON.parse(event.data) as Json;
            if (typeof metadata.sequence === "number") onSequenceRef.current(metadata.sequence);
            if (metadata.gap) terminal.write("\r\n[aviso] A visualização retomou com uma lacuna de saída.\r\n");
+           if (metadata.type === "ready") {
+             controlReady = true;
+             hasControl = metadata.control === true && !readOnly;
+             flushInput();
+           } else if (metadata.type === "control") {
+             hasControl = metadata.granted === true;
+             flushInput();
+           } else if (metadata.type === "error" && metadata.code === "control_held") {
+             hasControl = false;
+           }
            if (metadata.type === "error") {
              const code = String(metadata.code ?? "terminal_error");
              const message = typeof metadata.message === "string" ? metadata.message :
@@ -979,10 +992,13 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
      const focus = () => terminal.focus();
      host.addEventListener("click", focus);
      window.addEventListener("resize", resize);
+     const resizeObserver = new ResizeObserver(resize);
+     resizeObserver.observe(host);
      resize();
      return () => {
        disposed = true;
        window.removeEventListener("resize", resize);
+       resizeObserver.disconnect();
        host.removeEventListener("click", focus);
        inputSubscription?.dispose();
        if (flushTimer !== null) window.clearTimeout(flushTimer);

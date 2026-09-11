@@ -795,6 +795,84 @@ def test_web_v2_terminal_stream_includes_sequence_metadata(workspace) -> None:
         client.delete(f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}")
 
 
+def test_historical_terminal_stream_returns_reconnectable_error(workspace) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ctfws.web import create_app
+
+    with TestClient(create_app(workspace.paths)) as client:
+        terminal = client.post(
+            f"/api/v2/workspaces/{workspace.lab.id}/terminals",
+            json={"name": "historical", "kind": "local"},
+        )
+        assert terminal.status_code == 201
+        terminal_id = terminal.json()["id"]
+
+        closed = client.delete(f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}")
+        assert closed.status_code == 200
+        assert closed.json()["status"] == TerminalStatus.CLOSED.value
+
+        listed = client.get(f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}")
+        assert listed.status_code == 200
+        assert listed.json()["runtime_available"] is False
+        assert listed.json()["reconnectable"] is False
+
+        with client.websocket_connect(
+            f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}/stream"
+        ) as socket:
+            message = socket.receive_json()
+            assert message["type"] == "error"
+            assert message["code"] == "terminal_not_active"
+            assert message["reconnectable"] is False
+            closed_message = socket.receive()
+            assert closed_message["type"] == "websocket.close"
+            assert closed_message["code"] == 4409
+
+
+def test_read_only_terminal_cannot_resize(workspace) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ctfws.web import create_app
+
+    with TestClient(create_app(workspace.paths)) as client:
+        terminal = client.post(
+            f"/api/v2/workspaces/{workspace.lab.id}/terminals",
+            json={"name": "readonly-resize", "kind": "local"},
+        )
+        assert terminal.status_code == 201
+        terminal_id = terminal.json()["id"]
+        stream_path = f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}/stream"
+        with client.websocket_connect(stream_path) as controller:
+            assert controller.receive_json()["type"] == "ready"
+            with client.websocket_connect(f"{stream_path}?readonly=1") as viewer:
+                assert viewer.receive_json()["type"] == "ready"
+                viewer.send_json({"action": "resize", "columns": 140, "rows": 40})
+                error_code = None
+                for _ in range(10):
+                    message = viewer.receive()
+                    if message.get("text"):
+                        payload = json.loads(message["text"])
+                        if payload.get("type") == "error":
+                            error_code = payload.get("code")
+                            break
+                assert error_code == "control_held"
+        client.delete(f"/api/v2/workspaces/{workspace.lab.id}/terminals/{terminal_id}")
+
+
+def test_workspace_recreates_operational_directories(workspace) -> None:
+    for directory in ("notes", "evidence", "reports", "loot", "logs"):
+        (workspace.paths.root / directory).rmdir()
+
+    from ctfws.services.workspace import WorkspaceService
+
+    WorkspaceService(workspace.paths)
+
+    for directory in ("notes", "evidence", "reports", "loot", "logs"):
+        assert (workspace.paths.root / directory).is_dir()
+
+
 def test_web_runtime_start_requires_server_side_confirmation(workspace) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient

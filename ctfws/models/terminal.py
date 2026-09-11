@@ -51,5 +51,8 @@ class TerminalRead(TerminalCreate):
     context_label: str
     owner_subject: str | None = None
     engine_id: str | None = None
+    runtime_available: bool = False
+    reconnectable: bool = False
+    availability_reason: str | None = None
     created_at: datetime
     updated_at: datetime
