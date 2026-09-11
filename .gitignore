@@ -16,7 +16,7 @@ frontend/.vite/
 
 # Runtime data belongs to a lab workspace, not the source tree.
 workspace.db
-logs/
-evidence/
-loot/
-reports/
+/logs/
+/evidence/
+/loot/
+/reports/
