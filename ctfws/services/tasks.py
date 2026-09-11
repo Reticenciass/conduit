@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -37,9 +38,11 @@ class TaskManager:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="ctfws-task"
         )
+        # Sync and async work share one capacity gate. The executor size alone
+        # cannot enforce the limit because AsyncSSH tasks run on the event loop.
+        self._heavy_slots = threading.BoundedSemaphore(max_workers)
         self._futures: dict[int, Future[None]] = {}
         self._async_tasks: dict[int, asyncio.Task[None]] = {}
-        self._async_semaphore: asyncio.Semaphore | None = None
         self._cancelled: set[int] = set()
         self._lock = Lock()
         self.logger = logging.getLogger("ctfws.tasks")
@@ -168,8 +171,9 @@ class TaskManager:
     def _run(self, task_id: int, work: TaskWork) -> None:
         if self.is_cancelled(task_id):
             return
-        self._update_with_event(task_id, status=TaskStatus.RUNNING, current_step="iniciando")
+        self._heavy_slots.acquire()
         try:
+            self._update_with_event(task_id, status=TaskStatus.RUNNING, current_step="iniciando")
             result = work(self._progress_callback(task_id))
             if self.is_cancelled(task_id):
                 self._mark_cancelled(task_id)
@@ -197,35 +201,44 @@ class TaskManager:
                 error_message=str(error),
             )
         finally:
+            self._heavy_slots.release()
             with self._lock:
                 self._futures.pop(task_id, None)
 
     async def _run_async(self, task_id: int, work: AsyncTaskWork) -> None:
+        acquire_task = asyncio.create_task(asyncio.to_thread(self._heavy_slots.acquire))
+        acquired = False
         try:
-            async with self._async_limiter():
-                if self.is_cancelled(task_id):
-                    return
-                self._update_with_event(
-                    task_id, status=TaskStatus.RUNNING, current_step="iniciando"
-                )
-                result = await work(self._progress_callback(task_id))
-                if self.is_cancelled(task_id):
-                    self._mark_cancelled(task_id)
-                    return
-                final_status = (
-                    TaskStatus.PARTIAL
-                    if isinstance(result.get("failed_steps"), list)
-                    and bool(result.get("failed_steps"))
-                    else TaskStatus.SUCCEEDED
-                )
-                self._update_with_event(
-                    task_id,
-                    status=final_status,
-                    progress=100,
-                    current_step="concluído",
-                    result=result,
-                )
+            # Shield the blocking acquisition so cancellation cannot leave a
+            # semaphore token held by the worker thread. If cancellation wins
+            # while queued, the handler below waits for and releases it.
+            await asyncio.shield(acquire_task)
+            acquired = True
+            if self.is_cancelled(task_id):
+                return
+            self._update_with_event(task_id, status=TaskStatus.RUNNING, current_step="iniciando")
+            result = await work(self._progress_callback(task_id))
+            if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
+                return
+            final_status = (
+                TaskStatus.PARTIAL
+                if isinstance(result.get("failed_steps"), list) and bool(result.get("failed_steps"))
+                else TaskStatus.SUCCEEDED
+            )
+            self._update_with_event(
+                task_id,
+                status=final_status,
+                progress=100,
+                current_step="concluído",
+                result=result,
+            )
         except asyncio.CancelledError:
+            if not acquire_task.done():
+                await acquire_task
+                acquired = True
+            elif acquire_task.done() and not acquire_task.cancelled():
+                acquired = bool(acquire_task.result())
             if not self.is_cancelled(task_id):
                 self._update_with_event(
                     task_id,
@@ -245,15 +258,10 @@ class TaskManager:
                 error_message=str(error),
             )
         finally:
+            if acquired:
+                self._heavy_slots.release()
             with self._lock:
                 self._async_tasks.pop(task_id, None)
-
-    def _async_limiter(self) -> asyncio.Semaphore:
-        """Create the async capacity gate on the event loop that uses it."""
-
-        if self._async_semaphore is None:
-            self._async_semaphore = asyncio.Semaphore(self._max_workers)
-        return self._async_semaphore
 
     def _progress_callback(self, task_id: int) -> Callable[[TaskProgress], None]:
         def update(progress: TaskProgress) -> None:
