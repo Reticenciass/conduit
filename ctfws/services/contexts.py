@@ -454,7 +454,7 @@ class NetworkContextService:
             return {
                 "context_id": context_id,
                 "launcher": launcher,
-                "argv": list(arguments),
+                "argv": [program, *arguments],
                 "returncode": result.returncode,
                 "timed_out": result.timed_out,
                 "output": result.output,
