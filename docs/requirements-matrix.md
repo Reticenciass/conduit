@@ -7,7 +7,7 @@ da instalação atual.
 | Grupo | Estado | Evidência no projeto |
 | --- | --- | --- |
 | A — estados verdadeiros, processos e saída final | implementado | `ForwardProcessService`, PTY/multiviewer, testes de regressão |
-| B — tarefas, idempotência e migrações 13→33 | implementado | `TaskRepository`, transição+evento na mesma transação, migração incremental 13→33, backup antes de migration |
+| B — tarefas, idempotência e migrações 13→34 | implementado | `TaskRepository`, hash de conteúdo para replay seguro, transição+evento na mesma transação, migração incremental 13→34, backup antes de migration |
 | B — AsyncSSH reutilizável | parcial | `AsyncSSHConnectionManager` mantém geração/capacidades e reutiliza conexões; terminais, inspeção, SFTP e forwards SSH do dashboard usam o canal compartilhado; parser seguro preserva `ProxyJump` tipado e categoriza falhas; CLI e adapters não-SSH mantêm fallback/processo |
 | C — React, TypeScript, Vite e xterm.js | implementado | `frontend/`, build incluído em `ctfws/frontend/dist`; abas, rename, busca, divisão somente leitura e backend WebSocket incluído no extra web |
 | C — PTY Linux, resize, controle e buffer limitado | implementado | `TerminalManager`, backpressure, fila de entrada no xterm, histórico sequenciado, cursor de retomada e compartilhamento explícito no WebSocket v2 |
