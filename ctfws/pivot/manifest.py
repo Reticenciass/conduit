@@ -118,7 +118,25 @@ def ligolo_manifest_status(path: Path | None = None) -> LigoloManifestStatus:
             agent_sha256,
             proxy_sha256,
         )
-    if reported_version != configured_version:
+    # The systemd service supplies the declared runtime version through its
+    # environment.  The standalone doctor command does not load that file;
+    # for a managed install the two executable hashes are the stronger proof
+    # and are sufficient when the service-only hint is absent.  A minimal
+    # third-party manifest still needs an explicit runtime declaration.
+    if reported_version is None and not any((agent_path, proxy_path, agent_sha256, proxy_sha256)):
+        return _status(
+            selected_path,
+            contract,
+            configured_version,
+            reported_version,
+            False,
+            "a versão do runtime não foi informada para este manifesto",
+            agent_path,
+            proxy_path,
+            agent_sha256,
+            proxy_sha256,
+        )
+    if reported_version is not None and reported_version != configured_version:
         return _status(
             selected_path,
             contract,
@@ -233,5 +251,8 @@ def _configured_path() -> Path | None:
     configured = os.getenv("CTFWS_LIGOLO_MANIFEST")
     if configured:
         return Path(configured).expanduser().resolve()
+    installed = Path("/etc/ctfws/ligolo-compatibility.toml")
+    if installed.is_file():
+        return installed
     candidate = Path(__file__).resolve().parents[2] / "deploy" / "compatibility.toml"
     return candidate if candidate.is_file() else None
