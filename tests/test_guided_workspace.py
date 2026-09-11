@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import time
 from pathlib import Path
 
@@ -1084,6 +1085,59 @@ def test_web_generates_a_socks_launcher_without_executing_it(workspace) -> None:
     assert payload["environment"]["ALL_PROXY"] == "socks5h://127.0.0.1:19091"
 
 
+def test_web_executes_reviewed_context_launcher_as_idempotent_job(workspace) -> None:
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ctfws.models.context import ContextStatus, ContextTransport, NetworkContextCreate
+    from ctfws.services.contexts import NetworkContextService
+    from ctfws.web import create_app
+
+    profile = workspace.connections.create(
+        ConnectionProfileCreate(name="execute-target", host="192.0.2.82", user="analyst")
+    )
+    context = NetworkContextService(workspace).plan(
+        NetworkContextCreate(
+            name="execute-socks",
+            transport=ContextTransport.SOCKS,
+            connection_id=profile.id,
+            local_address="127.0.0.1",
+            local_port=19092,
+        )
+    )
+    workspace.contexts.update_runtime(context.id, status=ContextStatus.ACTIVE)
+
+    with TestClient(create_app(workspace.paths)) as client:
+        body = {
+            "program": sys.executable,
+            "arguments": ["-c", "print('button-execution-ok')"],
+            "launcher": "environment",
+        }
+        response = client.post(
+            f"/api/v2/workspaces/{workspace.lab.id}/contexts/{context.id}/execute",
+            headers={"Idempotency-Key": "execute-once"},
+            json=body,
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        repeated = client.post(
+            f"/api/v2/workspaces/{workspace.lab.id}/contexts/{context.id}/execute",
+            headers={"Idempotency-Key": "execute-once"},
+            json=body,
+        )
+        assert repeated.status_code == 202
+        assert repeated.json()["job_id"] == job_id
+
+        result: dict[str, object] = {}
+        for _ in range(40):
+            result = client.get(f"/api/v2/workspaces/{workspace.lab.id}/jobs/{job_id}").json()
+            if result.get("status") in {"succeeded", "failed", "partial"}:
+                break
+            time.sleep(0.05)
+        assert result["status"] == "succeeded"
+        assert "button-execution-ok" in str(result["result"]["output"])
+
+
 def test_web_v2_exposes_history_evidence_search_and_topology(workspace) -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -1108,6 +1162,15 @@ def test_web_v2_exposes_history_evidence_search_and_topology(workspace) -> None:
     )
     assert evidence.status_code == 201
     assert client.get("/api/v1/search", params={"query": "web01"}).json()[0]["kind"] == "Host"
+    graph = client.get(f"/api/v2/workspaces/{workspace.lab.id}/topology/graph")
+    assert graph.status_code == 200
+    assert any(node["id"] == f"host:{host.id}" for node in graph.json()["nodes"])
+    actions = client.get(f"/api/v2/workspaces/{workspace.lab.id}/resources/host/{host.id}/actions")
+    assert actions.status_code == 200
+    assert {item["id"] for item in actions.json()["actions"]} >= {
+        "inspect_machine",
+        "register_evidence",
+    }
     topology = client.get("/api/v1/topology", params={"format_name": "dot"})
     assert topology.status_code == 200
     assert topology.json()["format"] == "dot"

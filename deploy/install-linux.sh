@@ -21,6 +21,51 @@ fi
 /opt/ctfws/.venv/bin/conduit --version >/dev/null
 /opt/ctfws/.venv/bin/ctfws --version >/dev/null
 
+# Install the exact Ligolo-ng release used by the routed-context contract.
+# Distro packages are intentionally not used: Kali's package may report
+# "dev" and cannot prove that it matches the adapter manifest.
+ligolo_version="0.9.1"
+ligolo_arch="$(uname -m)"
+case "${ligolo_arch}" in
+  x86_64) ligolo_platform="amd64" ;;
+  aarch64|arm64) ligolo_platform="arm64" ;;
+  *) echo "Arquitetura ${ligolo_arch} não suportada para o Ligolo-ng gerenciado." >&2; exit 1 ;;
+esac
+ligolo_root="/opt/ctfws/tools/ligolo-ng/${ligolo_version}"
+ligolo_tmp="$(mktemp -d /tmp/ctfws-ligolo.XXXXXX)"
+trap 'rm -rf -- "${ligolo_tmp}"' EXIT
+ligolo_base="https://github.com/nicocha30/ligolo-ng/releases/download/v${ligolo_version}"
+ligolo_checksums="ligolo-ng_${ligolo_version}_checksums.txt"
+curl -fsSL --proto '=https' --tlsv1.2 "${ligolo_base}/${ligolo_checksums}" -o "${ligolo_tmp}/${ligolo_checksums}"
+for ligolo_role in agent proxy; do
+  ligolo_asset="ligolo-ng_${ligolo_role}_${ligolo_version}_linux_${ligolo_platform}.tar.gz"
+  curl -fsSL --proto '=https' --tlsv1.2 "${ligolo_base}/${ligolo_asset}" -o "${ligolo_tmp}/${ligolo_asset}"
+  ligolo_expected="$(awk -v asset="${ligolo_asset}" '$2 == asset { print $1 }' "${ligolo_tmp}/${ligolo_checksums}")"
+  if [[ ! "${ligolo_expected}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "Checksum oficial não encontrado para ${ligolo_asset}." >&2
+    exit 1
+  fi
+  printf '%s  %s\n' "${ligolo_expected}" "${ligolo_tmp}/${ligolo_asset}" | sha256sum -c -
+done
+install -d -m 0755 "${ligolo_root}"
+for ligolo_role in agent proxy; do
+  ligolo_asset="ligolo-ng_${ligolo_role}_${ligolo_version}_linux_${ligolo_platform}.tar.gz"
+  install -d -m 0755 "${ligolo_tmp}/${ligolo_role}"
+  tar -xzf "${ligolo_tmp}/${ligolo_asset}" -C "${ligolo_tmp}/${ligolo_role}"
+  install -m 0755 "${ligolo_tmp}/${ligolo_role}/${ligolo_role}" "${ligolo_root}/ligolo-${ligolo_role}"
+done
+ligolo_agent_path="${ligolo_root}/ligolo-agent"
+ligolo_proxy_path="${ligolo_root}/ligolo-proxy"
+ligolo_manifest_path="/etc/ctfws/ligolo-compatibility.toml"
+ligolo_agent_sha256="$(sha256sum "${ligolo_agent_path}" | awk '{ print $1 }')"
+ligolo_proxy_sha256="$(sha256sum "${ligolo_proxy_path}" | awk '{ print $1 }')"
+sed \
+  -e "s|^agent_sha256 =.*|agent_sha256 = \"${ligolo_agent_sha256}\"|" \
+  -e "s|^proxy_sha256 =.*|proxy_sha256 = \"${ligolo_proxy_sha256}\"|" \
+  "${project_dir}/deploy/compatibility.toml" > "${ligolo_manifest_path}"
+chown ctfws:ctfws "${ligolo_manifest_path}"
+chmod 0640 "${ligolo_manifest_path}"
+
 install -d -m 0755 /usr/local/bin
 for command_name in conduit ctfws; do
   command_link="/usr/local/bin/${command_name}"
@@ -92,6 +137,23 @@ if [ ! -s /etc/ctfws/ctfws.env ]; then
   chown ctfws:ctfws /etc/ctfws/ctfws.env
   echo "Código de bootstrap inicial (guarde-o; ele não será mostrado novamente): ${bootstrap_token}"
 fi
+
+append_env() {
+  local key="$1"
+  local value="$2"
+  if ! grep -qE "^${key}=" /etc/ctfws/ctfws.env; then
+    printf '%s=%s\n' "${key}" "${value}" >> /etc/ctfws/ctfws.env
+  fi
+}
+
+append_env CTFWS_LIGOLO_VERSION "${ligolo_version}"
+append_env CTFWS_LIGOLO_MANIFEST "${ligolo_manifest_path}"
+append_env CTFWS_LIGOLO_AGENT "${ligolo_agent_path}"
+append_env CTFWS_LIGOLO_PROXY "${ligolo_proxy_path}"
+append_env CTFWS_LIGOLO_AGENT_SHA256 "${ligolo_agent_sha256}"
+append_env CTFWS_LIGOLO_PROXY_SHA256 "${ligolo_proxy_sha256}"
+chmod 0600 /etc/ctfws/ctfws.env
+chown ctfws:ctfws /etc/ctfws/ctfws.env
 
 install -m 0644 "${project_dir}/deploy/ctfws.service" /etc/systemd/system/ctfws.service
 install -m 0644 "${project_dir}/deploy/ctfws-namespace-helper.service" /etc/systemd/system/ctfws-namespace-helper.service

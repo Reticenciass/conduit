@@ -58,6 +58,7 @@ function App() {
   const [terminals, setTerminals] = useState<TerminalRow[]>([]);
   const [paths, setPaths] = useState<Json[]>([]);
   const [hosts, setHosts] = useState<Json[]>([]);
+  const [topology, setTopology] = useState<Json>({});
   const [notice, setNotice] = useState("Motor online");
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [terminalId, setTerminalId] = useState<number | null>(null);
@@ -72,12 +73,13 @@ function App() {
 
   const refresh = async () => {
     try {
-      const [nextSummary, nextProfiles, nextTerminals, nextPaths, nextHosts, session] = await Promise.all([
+      const [nextSummary, nextProfiles, nextTerminals, nextPaths, nextHosts, nextTopology, session] = await Promise.all([
         request<Json>("/summary"),
         request<Profile[]>("/connections"),
         request<TerminalRow[]>("/terminals"),
         request<Json[]>("/paths"),
         request<Json[]>("/hosts"),
+        request<Json>("/topology/graph"),
         requestV2<Json>("/auth/session"),
       ]);
       setSummary(nextSummary);
@@ -85,6 +87,7 @@ function App() {
       setTerminals(nextTerminals);
       setPaths(nextPaths);
       setHosts(nextHosts);
+      setTopology(nextTopology);
       setRole(session.authenticated ? String(session.role ?? "") : null);
       setNotice("Motor online");
     } catch (error) {
@@ -260,7 +263,7 @@ function App() {
       <main className="main-content">
         <div className="page-heading"><div><div className="eyebrow">OPERAÇÃO AUTORIZADA</div><h1>{view === "overview" ? "Visão geral" : viewLabel(view)}</h1><p>Organize infraestrutura, acesso e evidências com estados verificáveis.</p></div><div className="heading-actions"><button className="button secondary" onClick={() => void refresh()}>Atualizar</button><button className="button primary" onClick={() => setConnectionOpen(true)}>+ Conectar máquina</button></div></div>
         {connectionOpen && <ConnectionPanel onClose={() => setConnectionOpen(false)} onSaved={(id, password, inspectAfterSave, credentialKind) => { setConnectionOpen(false); void refresh(); if (inspectAfterSave) void testAndInspect(id, password, credentialKind); }} />}
-        {view === "overview" && <Overview summary={summary} profiles={profiles} terminals={terminals} paths={paths} onConnect={() => setConnectionOpen(true)} onTerminal={(id) => void openTerminal(id)} onInspect={(id) => void inspect(id)} onLocal={() => void openTerminal()} />}
+        {view === "overview" && <Overview summary={summary} profiles={profiles} terminals={terminals} paths={paths} topology={topology} onConnect={() => setConnectionOpen(true)} onTerminal={(id) => void openTerminal(id)} onInspect={(id) => void inspect(id)} onLocal={() => void openTerminal()} />}
         {view === "machines" && <Machines hosts={hosts} profiles={profiles} onTerminal={(id) => void openTerminal(id)} onInspect={(id) => void inspect(id)} />}
         {view === "terminals" && <TerminalView terminals={terminals} selected={terminalId} workspaceId={workspaceId} onSelect={setTerminalId} onLocal={() => void openTerminal()} onNewRemote={(id) => void openTerminal(id)} onClose={(id) => void closeTerminal(id)} onShare={(id, shared) => void shareTerminal(id, shared)} onRename={(id, name) => void renameTerminal(id, name)} />}
         {view === "tunnels" && <><ContextPlanner profiles={profiles} /><Tunnels paths={paths} profiles={profiles} /></>}
@@ -330,15 +333,31 @@ function App() {
 
 function viewLabel(view: View) { return ({ overview: "Visão geral", machines: "Máquinas", terminals: "Terminais", tunnels: "Túneis e contextos", files: "Arquivos e evidências", tools: "Ferramentas", activity: "Atividade", settings: "Configurações" })[view]; }
 
-function Overview({ summary, profiles, terminals, paths, onConnect, onTerminal, onInspect, onLocal }: { summary: Json; profiles: Profile[]; terminals: TerminalRow[]; paths: Json[]; onConnect: () => void; onTerminal: (id: number) => void; onInspect: (id: number) => void; onLocal: () => void }) {
+function Overview({ summary, profiles, terminals, paths, topology, onConnect, onTerminal, onInspect, onLocal }: { summary: Json; profiles: Profile[]; terminals: TerminalRow[]; paths: Json[]; topology: Json; onConnect: () => void; onTerminal: (id: number) => void; onInspect: (id: number) => void; onLocal: () => void }) {
   return <>
     <section className="metrics">{([["máquinas", summary.hosts ?? 0], ["conexões", summary.connections ?? 0], ["terminais ativos", summary.active_terminals ?? 0], ["túneis", summary.forwards ?? 0]] as [string, unknown][]).map(([label, value]) => <div className="metric-card" key={label}><div className="metric-label">{label}</div><div className="metric-value">{String(value)}</div></div>)}</section>
     <div className="content-grid"><section className="panel span-two"><PanelHeader title="Comece por aqui" subtitle="O caminho guiado do workspace" /><div className="quick-actions"><button onClick={onConnect}><b>1</b><span><strong>Conecte uma máquina</strong><small>Cole seu SSH e valide a identidade</small></span><i>→</i></button><button onClick={() => profiles[0] && onInspect(profiles[0].id)} disabled={!profiles.length}><b>2</b><span><strong>Inspecione a rede</strong><small>Interfaces, rotas, vizinhos e serviços</small></span><i>→</i></button><button onClick={() => profiles[0] && onTerminal(profiles[0].id)} disabled={!profiles.length}><b>3</b><span><strong>Abra um terminal</strong><small>Crie abas independentes sem repetir o SSH</small></span><i>→</i></button></div></section>
       <section className="panel"><PanelHeader title="Conexões" action={<span className="pill">{profiles.length} salvas</span>} />{profiles.length ? profiles.map(profile => <div className="list-row" key={profile.id}><div className="row-icon">⌁</div><div className="row-main"><strong>{profile.name}</strong><small>{profile.user}@{profile.host}:{profile.port}</small>{typeof profile.last_error === "string" && <small className="connection-error">{profile.last_error}</small>}</div><span className={`state ${profile.state}`}>{profile.state}</span><button className="icon-button" title="Abrir terminal" onClick={() => onTerminal(profile.id)}>↗</button></div>) : <Empty text="Nenhuma conexão salva" />}</section>
       <section className="panel"><PanelHeader title="Terminais recentes" action={<button className="text-button" onClick={onLocal}>+ Novo</button>} />{terminals.length ? terminals.slice(-5).reverse().map(row => <div className="list-row" key={row.id}><div className="row-icon terminal-icon">⌘</div><div className="row-main"><strong>{row.context_label}</strong><small>Terminal #{row.id}</small></div><span className={`state ${row.status}`}>{row.status}</span></div>) : <Empty text="Abra seu primeiro terminal" />}</section>
       <section className="panel span-two"><PanelHeader title="Mapa de acesso" subtitle="Inferências separadas de verificações reais" action={<span className="pill">{paths.length} caminhos</span>} />{paths.length ? <div className="path-list">{paths.slice(0, 8).map(path => <div className="path-row" key={String(path.id)}><span className={`path-state ${String(path.state)}`}>{String(path.state)}</span><strong>{String(path.target_address)}{path.target_port ? `:${String(path.target_port)}` : ""}</strong><span className="muted">{String(path.reason ?? "")}</span></div>)}</div> : <Empty text="Inspecione uma máquina para montar o mapa" />}</section>
+      <section className="panel span-two"><PanelHeader title="Topologia observada" subtitle="Selecione um elemento para ver o vínculo e sua proveniência" /><TopologyMap graph={topology} /></section>
     </div>
   </>;
+}
+
+function TopologyMap({ graph }: { graph: Json }) {
+  const [selected, setSelected] = useState<Json | null>(null);
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes.map(asRecord) : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges.map(asRecord) : [];
+  const position = (node: Json, index: number) => {
+    const kind = String(node.kind);
+    const columns = kind === "operator" ? 1 : kind === "network" ? 2 : kind === "host" ? 3 : 4;
+    const sameKind = nodes.slice(0, index + 1).filter(item => String(item.kind) === kind).length - 1;
+    return { x: 80 + (columns - 1) * 170, y: 48 + sameKind * 72 };
+  };
+  const positions = new Map(nodes.map((node, index) => [String(node.id), position(node, index)]));
+  const height = Math.max(360, ...Array.from(positions.values()).map(point => point.y + 70));
+  return nodes.length ? <div className="topology-map"><svg className="topology-svg" viewBox={`0 0 680 ${height}`} role="img" aria-label="Mapa da topologia observada">{edges.map((edge, index) => { const start = positions.get(String(edge.source)); const end = positions.get(String(edge.target)); return start && end ? <line key={index} x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke="#385070" strokeWidth="2" /> : null; })}{nodes.map((node, index) => { const point = position(node, index); const active = selected?.id === node.id; return <g key={String(node.id)} role="button" tabIndex={0} aria-label={`Selecionar ${String(node.label)}`} onClick={() => setSelected(node)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(node); } }}><circle cx={point.x} cy={point.y} r={active ? 24 : 20} fill={node.kind === "network" ? "#19385a" : node.kind === "service" ? "#254d49" : "#192b45"} stroke={active ? "#7dd3fc" : "#4b6689"} strokeWidth={active ? 3 : 1} /><text x={point.x} y={point.y + 4} textAnchor="middle" fill="#e5eefc" fontSize="11">{String(node.kind).slice(0, 3).toUpperCase()}</text><text x={point.x} y={point.y + 34} textAnchor="middle" fill="#b3c5df" fontSize="11">{String(node.label).slice(0, 22)}</text></g>; })}</svg>{selected && <div className="topology-selection"><strong>{String(selected.label)}</strong><small>{String(selected.kind)} · {String(selected.address ?? selected.cidr ?? "evidência observada")}</small><button className="text-button" onClick={() => setSelected(null)}>Fechar detalhe</button></div>}<details><summary>Ver dados acessíveis da topologia</summary><div className="topology-table">{nodes.map(node => <button key={String(node.id)} className="list-row" onClick={() => setSelected(node)}><span className="row-icon">{String(node.kind).slice(0, 1).toUpperCase()}</span><span className="row-main"><strong>{String(node.label)}</strong><small>{String(node.kind)} · {String(node.address ?? node.cidr ?? "observado")}</small></span></button>)}</div></details></div> : <Empty text="Nenhuma topologia observada ainda" />;
 }
 
 function Machines({ hosts, profiles, onTerminal, onInspect }: { hosts: Json[]; profiles: Profile[]; onTerminal: (id: number) => void; onInspect: (id: number) => void }) { return <div className="content-grid"><section className="panel span-two"><PanelHeader title="Máquinas observadas" subtitle="Escopo e proveniência permanecem visíveis" />{hosts.length ? hosts.map(host => <div className="machine-card" key={String(host.id)}><div className="machine-avatar">{String(host.name ?? "?").slice(0, 1).toUpperCase()}</div><div className="row-main"><strong>{String(host.name)}</strong><small>{String(host.ip)} · {String(host.os ?? "sistema não identificado")}</small></div><span className={`state ${String(host.status)}`}>{String(host.status)}</span>{profiles.filter(p => p.host_id === host.id).map(profile => <><button className="button small secondary" onClick={() => onInspect(profile.id)}>Inspecionar</button><button className="button small primary" onClick={() => onTerminal(profile.id)}>Terminal</button></>)}</div>) : <Empty text="Nenhuma máquina observada ainda" />}</section></div>; }
@@ -350,17 +369,20 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
   const [message, setMessage] = useState("");
   const [contexts, setContexts] = useState<Json[]>([]);
   const [forwards, setForwards] = useState<Json[]>([]);
+  const [capabilities, setCapabilities] = useState<Json>({});
   const [namespacePlan, setNamespacePlan] = useState<Json | null>(null);
 
   const loadResources = () => {
-    void Promise.all([request<Json[]>("/contexts"), request<Json[]>("/forwards")])
-      .then(([nextContexts, nextForwards]) => {
+    void Promise.all([request<Json[]>("/contexts"), request<Json[]>("/forwards"), request<Json>("/capabilities")])
+      .then(([nextContexts, nextForwards, nextCapabilities]) => {
         setContexts(nextContexts);
         setForwards(nextForwards);
+        setCapabilities(nextCapabilities);
       })
       .catch(() => {
         setContexts([]);
         setForwards([]);
+        setCapabilities({});
       });
   };
 
@@ -450,6 +472,12 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
 
   const toggleContext = async (context: Json) => {
     const action = String(context.status) === "active" ? "stop" : "start";
+    const routed = asRecord(asRecord(capabilities.network_contexts).routed);
+    if (action === "start" && String(context.transport) === "routed" && routed.enabled !== true) {
+      const manifest = asRecord(routed.manifest);
+      setMessage(`Ligolo indisponível: ${String(manifest.reason ?? "verifique os requisitos em Diagnóstico")}`);
+      return;
+    }
     try {
       const requestOptions = action === "start" ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) } : { method: "POST" };
       const updated = await request<Json>(`/contexts/${String(context.id)}/${action}`, requestOptions);
@@ -533,11 +561,12 @@ function Tunnels({ paths, profiles }: { paths: Json[]; profiles: Profile[] }) {
     </section>
     <section className="panel span-two">
       <PanelHeader title="Contextos de rede" subtitle="SOCKS e roteamento permanecem explícitos e independentes" />
+      {Object.keys(capabilities).length > 0 && asRecord(asRecord(capabilities.network_contexts).routed).enabled !== true && <div className="notice-message">Roteamento Ligolo está indisponível neste motor. O modo SOCKS continua disponível.<details><summary>Ver diagnóstico do adaptador</summary><pre className="plan-preview">{JSON.stringify(asRecord(asRecord(capabilities.network_contexts).routed), null, 2)}</pre></details></div>}
       {contexts.length ? contexts.map(context => <div className="list-row" key={String(context.id)}>
         <div className="row-icon">⇄</div>
         <div className="row-main"><strong>{String(context.name)}</strong><small>{String(context.transport)} · {String(context.network_cidrs ?? "sem redes")}</small></div>
         <span className={`state ${String(context.status)}`}>{String(context.status)}</span>
-        <button className="button small secondary" onClick={() => void toggleContext(context)}>{String(context.status) === "active" ? "Parar" : "Iniciar"}</button>
+        <button className="button small secondary" disabled={String(context.status) !== "active" && String(context.transport) === "routed" && asRecord(asRecord(capabilities.network_contexts).routed).enabled !== true} title={String(context.transport) === "routed" ? "Disponível somente após validar o adaptador Ligolo" : undefined} onClick={() => void toggleContext(context)}>{String(context.status) === "active" ? "Parar" : "Iniciar"}</button>
         {String(context.transport) === "routed" && (Array.isArray(context.resource_manifest) && context.resource_manifest.length ? <button className="button small secondary" onClick={() => void namespaceAction(context, "remove")}>Remover namespace</button> : <button className="button small secondary" onClick={() => void reviewNamespace(context)}>Revisar namespace</button>)}
       </div>) : <Empty text="Nenhum contexto planejado" />}
     </section>
@@ -557,6 +586,7 @@ function ContextLauncherPanel({ contexts, setMessage }: { contexts: Json[]; setM
   const [argumentsText, setArgumentsText] = useState("");
   const [launcher, setLauncher] = useState("environment");
   const [plan, setPlan] = useState<Json | null>(null);
+  const [executing, setExecuting] = useState(false);
   const selectedContext = active.find(context => Number(context.id) === contextId);
   useEffect(() => { if (!active.some(context => Number(context.id) === contextId)) setContextId(Number(active[0]?.id ?? 0)); }, [contexts, contextId]);
   useEffect(() => { setLauncher(selectedContext?.transport === "routed" ? "namespace" : "environment"); }, [selectedContext?.id, selectedContext?.transport]);
@@ -570,7 +600,17 @@ function ContextLauncherPanel({ contexts, setMessage }: { contexts: Json[]; setM
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
   };
   const copyCommand = async () => { if (!plan?.command) return; await navigator.clipboard?.writeText(String(plan.command)); setMessage("Comando copiado para a área de transferência."); };
-  return <section className="panel span-two"><PanelHeader title="Usar ferramentas em contexto" subtitle="Gere um launcher por contexto; a aplicação escolhida continua sob controle do operador." />{active.length ? <form className="form-grid" onSubmit={event => void generate(event)}><label>Contexto ativo<select value={contextId} onChange={event => setContextId(Number(event.target.value))}>{active.map(context => <option key={String(context.id)} value={Number(context.id)}>{String(context.name)} · {String(context.transport)}{context.local_port ? ` · ${String(context.local_address)}:${String(context.local_port)}` : ""}</option>)}</select></label><label>Modo<select value={launcher} onChange={event => setLauncher(event.target.value)}>{selectedContext?.transport === "routed" ? <option value="namespace">Namespace roteado</option> : <><option value="environment">Variáveis SOCKS5H</option><option value="proxychains">proxychains-ng</option></>}</select></label><label>Programa<input value={program} onChange={event => setProgram(event.target.value)} placeholder="curl, nmap, wget…" required /></label><label>Argumentos (um por linha)<textarea value={argumentsText} onChange={event => setArgumentsText(event.target.value)} placeholder="--proxy\nsocks5h://127.0.0.1:19090\nhttp://destino" rows={4} /></label><div className="panel-actions"><button className="button primary" type="submit">Gerar launcher</button>{typeof plan?.command === "string" && <button className="button secondary" type="button" onClick={() => void copyCommand()}>Copiar comando</button>}</div>{plan && <pre className="plan-preview">{JSON.stringify({ command: plan.command, environment: plan.environment, config_path: plan.config_path, limitations: plan.limitations }, null, 2)}</pre>}</form> : <Empty text="Inicie um contexto SOCKS ou roteado para gerar launchers" />}</section>;
+  const execute = async () => {
+    if (!plan || !contextId) { setMessage("Gere e revise o launcher antes de executar."); return; }
+    setExecuting(true);
+    try {
+      const result = await request<Json>(`/contexts/${contextId}/execute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ program, arguments: argumentsText.split(/\r?\n/).map(item => item.trim()).filter(Boolean), launcher }) });
+      setMessage(`Execução criada como tarefa #${String(result.job_id)}. Abra Atividade para acompanhar a saída.`);
+      window.dispatchEvent(new Event("ctfws:activity-refresh"));
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setExecuting(false); }
+  };
+  return <section className="panel span-two"><PanelHeader title="Usar ferramentas em contexto" subtitle="Revise o launcher e execute pela interface; nenhum shell livre é aceito pelo motor." />{active.length ? <form className="form-grid" onSubmit={event => void generate(event)}><label>Contexto ativo<select value={contextId} onChange={event => setContextId(Number(event.target.value))}>{active.map(context => <option key={String(context.id)} value={Number(context.id)}>{String(context.name)} · {String(context.transport)}{context.local_port ? ` · ${String(context.local_address)}:${String(context.local_port)}` : ""}</option>)}</select></label><label>Modo<select value={launcher} onChange={event => setLauncher(event.target.value)}>{selectedContext?.transport === "routed" ? <option value="namespace">Namespace roteado</option> : <><option value="environment">Variáveis SOCKS5H</option><option value="proxychains">proxychains-ng</option></>}</select></label><label>Programa<input value={program} onChange={event => setProgram(event.target.value)} placeholder="curl, nmap, wget…" required /></label><label>Argumentos (um por linha)<textarea value={argumentsText} onChange={event => setArgumentsText(event.target.value)} placeholder="--proxy\nsocks5h://127.0.0.1:19090\nhttp://destino" rows={4} /></label><div className="panel-actions"><button className="button primary" type="submit">Gerar launcher</button>{typeof plan?.command === "string" && <><button className="button secondary" type="button" onClick={() => void copyCommand()}>Copiar comando</button><button className="button primary" type="button" disabled={executing} onClick={() => void execute()}>{executing ? "Iniciando…" : "Executar agora"}</button></>}</div>{plan && <pre className="plan-preview">{JSON.stringify({ command: plan.command, environment: plan.environment, config_path: plan.config_path, limitations: plan.limitations }, null, 2)}</pre>}</form> : <Empty text="Inicie um contexto SOCKS ou roteado para gerar launchers" />}</section>;
 }
 
 function ContextPlanner({ profiles }: { profiles: Profile[] }) {
@@ -601,7 +641,7 @@ function Tools({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   const [remoteDirectory, setRemoteDirectory] = useState("/tmp/ctfws-tools");
   const [conflict, setConflict] = useState("cancel");
   const load = () => void request<Json[]>("/tools").then(setTools).catch(() => setTools([]));
-  useEffect(load, []);
+  useEffect(() => { void load(); }, []);
   useEffect(() => { if (!remoteProfile && profiles[0]) setRemoteProfile(profiles[0].id); }, [profiles, remoteProfile]);
 
   const register = async (event: React.FormEvent) => {
@@ -779,8 +819,17 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   const [remotePath, setRemotePath] = useState(".");
   const [conflict, setConflict] = useState("cancel");
   const [uploading, setUploading] = useState(false);
-  const load = () => void request<Json[]>("/files?relative=loot/inbox").then(setFiles).catch(() => setFiles([]));
-  useEffect(load, []);
+  const [loadError, setLoadError] = useState("");
+  const load = async () => {
+    try {
+      setFiles(await request<Json[]>("/files?relative=loot/inbox"));
+      setLoadError("");
+    } catch (error) {
+      setFiles([]);
+      setLoadError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  useEffect(() => { void load(); }, []);
   useEffect(() => { if (!remoteProfile && profiles[0]) setRemoteProfile(profiles[0].id); }, [profiles, remoteProfile]);
   const uploadFiles = async (selectedFiles: FileList | File[]) => {
     const items = Array.from(selectedFiles);
@@ -839,7 +888,7 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
       setNotice(`Upload remoto concluído: ${String(result.sha256 ?? "verificação pendente")}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   };
-  return <div className="content-grid"><section className="panel"><PanelHeader title="Workspace / Kali" subtitle="Arquivos locais do motor" /><label>Conflito de destino<select value={conflict} onChange={event => setConflict(event.target.value)}><option value="cancel">Cancelar e pedir decisão</option><option value="keep_both">Manter ambos</option><option value="replace">Substituir explicitamente</option></select></label><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input type="file" multiple disabled={uploading} onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); event.target.value = ""; }} /><span className="drop-icon">↑</span><strong>{uploading ? "Enviando arquivos..." : "Arraste ou selecione arquivos"}</strong><small>Seleção múltipla, hash SHA-256 e finalização atômica.</small></label><div className="file-list">{files.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">▧</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><span className="muted">{String(file.size ?? "-")} bytes</span><button className="button small secondary" onClick={() => void registerEvidence(file)}>Registrar evidência</button>{remoteProfile > 0 && <button className="button small secondary" onClick={() => void uploadRemote(file)}>Enviar</button>}</div>)}</div></section><section className="panel"><PanelHeader title="Máquina remota" subtitle="Navegação via SFTP, sem shell remoto" />{profiles.length ? <><label>Conexão<select value={remoteProfile} onChange={event => setRemoteProfile(Number(event.target.value))}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.user}@{profile.host}</option>)}</select></label><label>Caminho remoto<input value={remotePath} onChange={event => setRemotePath(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browseRemote(); }} /></label><p className="muted">A política de conflito selecionada à esquerda também vale para downloads e uploads SFTP.</p><button className="button primary" onClick={() => void browseRemote()}>Navegar</button><div className="file-list">{remoteFiles.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">⇣</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><button className="button small secondary" onClick={() => void downloadRemote(file)}>Baixar</button></div>)}</div></> : <Empty text="Salve uma conexão SSH para navegar" />}</section></div>;
+  return <div className="content-grid"><section className="panel"><PanelHeader title="Workspace / Kali" subtitle="Arquivos locais do motor" /><label>Conflito de destino<select value={conflict} onChange={event => setConflict(event.target.value)}><option value="cancel">Cancelar e pedir decisão</option><option value="keep_both">Manter ambos</option><option value="replace">Substituir explicitamente</option></select></label><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input type="file" multiple disabled={uploading} onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); event.target.value = ""; }} /><span className="drop-icon">↑</span><strong>{uploading ? "Enviando arquivos..." : "Arraste ou selecione arquivos"}</strong><small>Seleção múltipla, hash SHA-256 e finalização atômica.</small></label>{loadError && <div className="error-message">Não foi possível listar loot/inbox: {loadError}<button className="button small secondary" onClick={() => void load()}>Tentar novamente</button></div>}<div className="file-list">{!loadError && !files.length && <Empty text="Nenhum arquivo nesta pasta" />}{files.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">▧</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><span className="muted">{String(file.size ?? "-")} bytes</span><button className="button small secondary" onClick={() => void registerEvidence(file)}>Registrar evidência</button>{remoteProfile > 0 && <button className="button small secondary" onClick={() => void uploadRemote(file)}>Enviar</button>}</div>)}</div></section><section className="panel"><PanelHeader title="Máquina remota" subtitle="Navegação via SFTP, sem shell remoto" />{profiles.length ? <><label>Conexão<select value={remoteProfile} onChange={event => setRemoteProfile(Number(event.target.value))}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.user}@{profile.host}</option>)}</select></label><label>Caminho remoto<input value={remotePath} onChange={event => setRemotePath(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browseRemote(); }} /></label><p className="muted">A política de conflito selecionada à esquerda também vale para downloads e uploads SFTP.</p><button className="button primary" onClick={() => void browseRemote()}>Navegar</button><div className="file-list">{remoteFiles.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">⇣</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><button className="button small secondary" onClick={() => void downloadRemote(file)}>Baixar</button></div>)}</div></> : <Empty text="Salve uma conexão SSH para navegar" />}</section></div>;
 }
 
 function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onNewRemote, onClose, onShare, onRename }: { terminals: TerminalRow[]; selected: number | null; workspaceId: number | null; onSelect: (id: number | null) => void; onLocal: () => void; onNewRemote: (connectionId: number) => void; onClose: (id: number) => void; onShare: (id: number, shared: boolean) => void; onRename: (id: number, name: string) => void }) {

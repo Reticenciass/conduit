@@ -20,9 +20,22 @@ requires_explicit_review = true
 
 [ligolo_ng]
 contract = "ctfws-routed-context-v1"
-version = "operator-selected"
+version = "0.9.1"
+release = "https://github.com/nicocha30/ligolo-ng/releases/tag/v0.9.1"
+agent_linux_amd64_asset = "ligolo-ng_agent_0.9.1_linux_amd64.tar.gz"
+agent_linux_amd64_archive_sha256 = "8e38630ea7a2771dfcf0800ae4de043260a25974d6246ad059b580bd3f038c42"
+agent_linux_arm64_asset = "ligolo-ng_agent_0.9.1_linux_arm64.tar.gz"
+agent_linux_arm64_archive_sha256 = "641082d3df3383f83e0840f7bad0528a5f2b593da26a79c89edaa750b61b2e20"
+proxy_linux_amd64_asset = "ligolo-ng_proxy_0.9.1_linux_amd64.tar.gz"
+proxy_linux_amd64_archive_sha256 = "4e4486a492c24f32ff5f965d230e08388c81b86d07b1af28c5f54df615731503"
+proxy_linux_arm64_asset = "ligolo-ng_proxy_0.9.1_linux_arm64.tar.gz"
+proxy_linux_arm64_archive_sha256 = "a7bce7ce036decf5375e0c9022ab453614a3f24a94792c12b367f2a6bc4e9560"
+agent_path = "/opt/ctfws/tools/ligolo-ng/0.9.1/ligolo-agent"
+proxy_path = "/opt/ctfws/tools/ligolo-ng/0.9.1/ligolo-proxy"
+agent_sha256 = ""
+proxy_sha256 = ""
 tested_capabilities = ["control-channel", "routed-context"]
-enabled_by_default = false
+enabled_by_default = true
 requires_manifest_match = true
 requires_privileged_helper = true
 

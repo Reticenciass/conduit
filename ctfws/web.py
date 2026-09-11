@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from ctfws.core.errors import EntityNotFoundError
 from ctfws.core.limits import max_file_bytes, max_workspace_bytes
 from ctfws.core.paths import WorkspacePaths
+from ctfws.database.repositories import ObservationRepository
 from ctfws.models.audit import AuditCreate
 from ctfws.models.connection import ConnectionProfileCreate, ConnectionProfileUpdate
 from ctfws.models.context import NetworkContextCreate
@@ -83,6 +84,12 @@ class ContextLauncherRequest(BaseModel):
     program: str = Field(min_length=1, max_length=4096)
     arguments: tuple[str, ...] = Field(default=(), max_length=64)
     launcher: Literal["environment", "proxychains", "namespace"] = "environment"
+
+
+class ContextExecuteRequest(ContextLauncherRequest):
+    """Explicit contextual execution request; it never accepts shell text."""
+
+    timeout_seconds: int = Field(default=60, ge=1, le=3600)
 
 
 class TerminalShareRequest(BaseModel):
@@ -706,6 +713,12 @@ def create_app(paths: WorkspacePaths) -> Any:
         content = topology.render_dot() if selected_format == "dot" else topology.render_text()
         return {"format": selected_format, "content": content}
 
+    @app.get("/api/v1/topology/graph")
+    @app.get("/api/v2/workspaces/{workspace_id}/topology/graph")
+    def topology_graph(workspace_id: int | None = None) -> dict[str, object]:
+        require_workspace(workspace_id)
+        return topology.graph()
+
     @app.post("/api/v1/topology/detect-pivots")
     @app.post("/api/v2/workspaces/{workspace_id}/topology/detect-pivots")
     def topology_detect_pivots(workspace_id: int | None = None) -> dict[str, int]:
@@ -826,6 +839,185 @@ def create_app(paths: WorkspacePaths) -> Any:
             },
         }
 
+    @app.get("/api/v1/resources/{resource_type}/{resource_id}/actions")
+    @app.get("/api/v2/workspaces/{workspace_id}/resources/{resource_type}/{resource_id}/actions")
+    def resource_actions(
+        resource_type: str,
+        resource_id: int,
+        workspace_id: int | None = None,
+    ) -> dict[str, object]:
+        """Describe button actions without exposing internal IDs as workflow input."""
+
+        require_workspace(workspace_id)
+        normalized = resource_type.strip().lower().replace("-", "_")
+
+        def action(
+            action_id: str,
+            label: str,
+            available: bool,
+            execution: str,
+            *requirements: str,
+        ) -> dict[str, object]:
+            return {
+                "id": action_id,
+                "label": label,
+                "available": available,
+                "execution": execution,
+                "requirements": list(requirements),
+            }
+
+        actions: list[dict[str, object]]
+        if normalized in {"connection", "profile", "connection_profile"}:
+            profile = workspace.connections.get(resource_id)
+            if profile is None:
+                raise HTTPException(
+                    status_code=404, detail="Conexão não encontrada neste workspace."
+                )
+            actions = [
+                action("test_connection", "Testar conexão", True, "motor Kali"),
+                action("inspect_machine", "Inspecionar máquina", True, "máquina remota"),
+                action("open_terminal", "Abrir terminal", True, "máquina remota"),
+                action("browse_files", "Abrir arquivos", True, "máquina remota", "SFTP"),
+            ]
+            resource = {"type": "connection", "id": profile.id, "label": profile.name}
+        elif normalized in {"host", "machine", "machine_host"}:
+            host = workspace.hosts.get(str(resource_id))
+            if host is None:
+                raise HTTPException(
+                    status_code=404, detail="Máquina não encontrada neste workspace."
+                )
+            profiles_for_host = [
+                profile for profile in workspace.connections.list() if profile.host_id == host.id
+            ]
+            actions = [
+                action(
+                    "inspect_machine",
+                    "Atualizar inventário",
+                    bool(profiles_for_host),
+                    "máquina remota",
+                    "perfil SSH associado",
+                ),
+                action(
+                    "open_terminal",
+                    "Abrir terminal",
+                    bool(profiles_for_host),
+                    "máquina remota",
+                    "perfil SSH associado",
+                ),
+                action(
+                    "access_network",
+                    "Acessar rede",
+                    bool(profiles_for_host),
+                    "contexto de rede",
+                    "perfil SSH associado",
+                ),
+                action("register_evidence", "Registrar evidência", True, "motor Kali"),
+            ]
+            resource = {"type": "host", "id": host.id, "label": host.name, "address": str(host.ip)}
+        elif normalized in {"context", "network_context"}:
+            context = workspace.contexts.get(resource_id)
+            if context is None:
+                raise HTTPException(
+                    status_code=404, detail="Contexto não encontrado neste workspace."
+                )
+            raw_routed = contexts.capabilities().get("routed")
+            routed: dict[str, object] = raw_routed if isinstance(raw_routed, dict) else {}
+            can_start = context.transport.value != "routed" or routed.get("enabled") is True
+            actions = [
+                action(
+                    "start_context",
+                    "Iniciar contexto",
+                    context.status.value != "active" and can_start,
+                    "motor Kali",
+                ),
+                action(
+                    "stop_context",
+                    "Encerrar contexto",
+                    context.status.value == "active",
+                    "motor Kali",
+                ),
+                action(
+                    "execute_tool",
+                    "Executar ferramenta",
+                    context.status.value == "active",
+                    "contexto de rede",
+                ),
+                action("diagnose_context", "Diagnosticar", True, "motor Kali"),
+            ]
+            resource = {"type": "network_context", "id": context.id, "label": context.name}
+        elif normalized in {"terminal", "terminal_session"}:
+            try:
+                terminal = terminals.get(resource_id)
+            except EntityNotFoundError as error:
+                raise HTTPException(
+                    status_code=404, detail="Terminal não encontrado neste workspace."
+                ) from error
+            actions = [
+                action(
+                    "attach",
+                    "Abrir visualização",
+                    terminals.runtime_available(terminal.id),
+                    "navegador",
+                ),
+                action(
+                    "new_session",
+                    "Abrir nova sessão",
+                    terminal.connection_id is not None,
+                    "máquina remota",
+                ),
+                action(
+                    "share",
+                    "Compartilhar visualização",
+                    terminal.status.value == "active",
+                    "navegador",
+                ),
+                action("close", "Encerrar terminal", True, "motor Kali"),
+            ]
+            resource = {
+                "type": "terminal",
+                "id": terminal.id,
+                "label": terminal.name or terminal.context_label,
+            }
+        elif normalized in {"service", "observed_service"}:
+            rows = ObservationRepository(workspace.database, workspace.lab.id).list_table(
+                "services"
+            )
+            service = next((row for row in rows if int(row["id"]) == resource_id), None)
+            if service is None:
+                raise HTTPException(
+                    status_code=404, detail="Serviço não encontrado neste workspace."
+                )
+            has_port = isinstance(service.get("port"), int)
+            actions = [
+                action("test_tcp", "Testar serviço TCP", has_port, "motor Kali", "porta observada"),
+                action("inspect_http", "Inspecionar HTTP", has_port, "motor Kali", "endpoint TCP"),
+                action("create_forward", "Criar acesso", has_port, "motor Kali", "perfil SSH"),
+                action("register_evidence", "Registrar evidência", True, "motor Kali"),
+            ]
+            resource = {
+                "type": "service",
+                "id": resource_id,
+                "label": service.get("description") or service.get("port"),
+            }
+        elif normalized in {"forward", "tunnel"}:
+            forward = workspace.forwards.get(resource_id)
+            if forward is None:
+                raise HTTPException(
+                    status_code=404, detail="Acesso não encontrado neste workspace."
+                )
+            active = forward.status.value in {"active", "starting", "degraded"}
+            actions = [
+                action("verify", "Testar acesso", active, "motor Kali"),
+                action("start", "Revisar e iniciar", not active, "motor Kali"),
+                action("stop", "Encerrar acesso", active, "motor Kali"),
+            ]
+            resource = {"type": "forward", "id": forward.id, "label": forward.name}
+        else:
+            raise HTTPException(
+                status_code=404, detail="Tipo de recurso não suportado neste workspace."
+            )
+        return {"resource": resource, "actions": actions}
+
     @app.get("/api/v1/contexts")
     @app.get("/api/v2/workspaces/{workspace_id}/contexts")
     def context_list(workspace_id: int | None = None) -> list[dict[str, Any]]:
@@ -849,6 +1041,29 @@ def create_app(paths: WorkspacePaths) -> Any:
             )
         except Exception as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/contexts/{context_id}/execute", status_code=202)
+    @app.post("/api/v2/workspaces/{workspace_id}/contexts/{context_id}/execute", status_code=202)
+    def context_execute(
+        context_id: int,
+        data: ContextExecuteRequest,
+        request: Request,
+        workspace_id: int | None = None,
+        idempotency_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        require_workspace(workspace_id)
+        task = tasks.submit(
+            TaskCreate(
+                kind="context_execution",
+                resource_type="network_context",
+                resource_id=context_id,
+                total_steps=1,
+                idempotency_key=idempotency_key,
+                requested_by=actor_for(request),
+            ),
+            lambda update: _context_execution_task(contexts, context_id, data, update),
+        )
+        return {"job_id": task.id, "status": task.status.value}
 
     @app.get("/api/v1/contexts/{context_id}/namespace-plan")
     @app.get("/api/v2/workspaces/{workspace_id}/contexts/{context_id}/namespace-plan")
@@ -1931,6 +2146,26 @@ def _inspect_task(
         "snapshot_id": result.snapshot_id,
         "collection_id": result.collection_id,
     }
+
+
+def _context_execution_task(
+    contexts: NetworkContextService,
+    context_id: int,
+    request: ContextExecuteRequest,
+    update: Any,
+) -> dict[str, object]:
+    """Run a contextual launcher as one durable task step."""
+
+    update(TaskProgress(completed_steps=0, total_steps=1, current_step="executando ferramenta"))
+    result = contexts.execute_launcher(
+        context_id,
+        request.program,
+        request.arguments,
+        launcher=request.launcher,
+        timeout_seconds=request.timeout_seconds,
+    )
+    update(TaskProgress(completed_steps=1, total_steps=1, current_step="ferramenta concluída"))
+    return result
 
 
 async def _inspect_async_task(

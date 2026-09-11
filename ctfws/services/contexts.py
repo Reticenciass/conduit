@@ -167,8 +167,10 @@ class NetworkContextService:
     def capabilities(self) -> dict[str, object]:
         helper = self.routed_helper.capabilities()
         manifest = ligolo_manifest_status()
-        ligolo_agent_available = shutil.which("ligolo-agent") is not None
-        ligolo_proxy_available = shutil.which("ligolo-proxy") is not None
+        ligolo_agent_path = manifest.agent_path or shutil.which("ligolo-agent")
+        ligolo_proxy_path = manifest.proxy_path or shutil.which("ligolo-proxy")
+        ligolo_agent_available = ligolo_agent_path is not None and Path(ligolo_agent_path).is_file()
+        ligolo_proxy_available = ligolo_proxy_path is not None and Path(ligolo_proxy_path).is_file()
         return {
             "socks": True,
             "routed": {
@@ -180,13 +182,22 @@ class NetworkContextService:
                     and ligolo_agent_available
                     and ligolo_proxy_available
                     and manifest.valid
+                    and manifest.binary_verified
                 ),
-                "requires": ["ligolo-agent", "ligolo-proxy", "namespace-helper"],
+                "requires": [
+                    "pinned Ligolo-ng 0.9.1",
+                    "checksums verificados",
+                    "ligolo-agent",
+                    "ligolo-proxy",
+                    "namespace-helper",
+                ],
                 "contract": "ctfws-routed-context-v1",
                 "note": "Rotas globais e DNS da Kali nunca são alterados.",
                 "helper": helper,
                 "ligolo_agent_available": ligolo_agent_available,
                 "ligolo_proxy_available": ligolo_proxy_available,
+                "ligolo_agent_path": ligolo_agent_path,
+                "ligolo_proxy_path": ligolo_proxy_path,
                 "manifest": manifest.as_dict(),
             },
             "proxychains": {
@@ -276,6 +287,100 @@ class NetworkContextService:
             "limitations": limitations,
         }
 
+    def execute_launcher(
+        self,
+        context_id: int,
+        program: str,
+        arguments: tuple[str, ...] = (),
+        *,
+        launcher: str = "environment",
+        timeout_seconds: int = 60,
+    ) -> dict[str, object]:
+        """Execute one explicitly selected program without invoking a shell.
+
+        The launcher preview and execution share the exact same argv. Output is
+        written to a context-scoped runtime file first, then capped before it
+        is returned to the task API. This keeps the button-driven workflow
+        useful without turning the motor into a free-form shell endpoint.
+        """
+
+        if not 1 <= timeout_seconds <= 3600:
+            raise ValueError("O tempo limite precisa estar entre 1 e 3600 segundos.")
+        plan = self.launcher_plan(context_id, program, arguments, launcher=launcher)
+        raw_argv = plan.get("argv")
+        raw_environment = plan.get("environment")
+        if not isinstance(raw_argv, list) or not all(isinstance(item, str) for item in raw_argv):
+            raise ValueError("O launcher não produziu argumentos executáveis válidos.")
+        environment = os.environ.copy()
+        if isinstance(raw_environment, dict):
+            environment.update({str(key): str(value) for key, value in raw_environment.items()})
+
+        run_dir = self.workspace.paths.root / "runtime" / "contexts" / str(context_id) / "runs"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        output_path = run_dir / f"run-{uuid.uuid4().hex}.log"
+        process: subprocess.Popen[bytes] | None = None
+        timed_out = False
+        try:
+            with output_path.open("wb") as output:
+                process = subprocess.Popen(
+                    raw_argv,
+                    cwd=str(self.workspace.paths.root),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=os.name != "nt",
+                )
+                deadline = time.monotonic() + timeout_seconds
+                while process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        if os.name != "nt":
+                            kill_group = getattr(os, "killpg", None)
+                            if callable(kill_group):
+                                kill_group(process.pid, 15)
+                            else:
+                                process.terminate()
+                        else:
+                            process.terminate()
+                        break
+                    time.sleep(0.05)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if os.name != "nt":
+                        kill_group = getattr(os, "killpg", None)
+                        if callable(kill_group):
+                            kill_group(process.pid, 9)
+                        else:
+                            process.kill()
+                    else:
+                        process.kill()
+                    process.wait(timeout=2)
+        finally:
+            try:
+                size = output_path.stat().st_size
+                with output_path.open("rb") as output:
+                    data = output.read(1024 * 1024 + 1)
+                truncated = size > 1024 * 1024
+                text = data[: 1024 * 1024].decode("utf-8", errors="replace")
+            finally:
+                output_path.unlink(missing_ok=True)
+
+        return {
+            "context_id": context_id,
+            "launcher": launcher,
+            "argv": raw_argv,
+            "returncode": process.returncode if process is not None else None,
+            "timed_out": timed_out,
+            "output": text,
+            "output_truncated": truncated,
+            "failed_steps": (
+                ["execution"] if timed_out or process is None or process.returncode != 0 else []
+            ),
+            "limitations": plan.get("limitations", []),
+        }
+
     def plan(self, data: NetworkContextCreate) -> NetworkContextRead:
         self._validate_networks(data.network_cidrs)
         lease: PortLease | None = None
@@ -323,11 +428,11 @@ class NetworkContextService:
             return self.workspace.contexts.update_runtime(
                 context_id,
                 status=ContextStatus.ERROR,
-                health="routed_disabled",
+                health="routed_unavailable",
                 capabilities=(),
                 error=(
-                    "Contexto roteado desabilitado: instale o helper tipado, ligolo-proxy e "
-                    f"ative CTFWS_ENABLE_ROUTED_CONTEXTS (capabilities={routed})."
+                    "Contexto roteado indisponível: corrija os requisitos mostrados no diagnóstico "
+                    f"antes de iniciar (motivo={routed.get('manifest', {})})."
                 ),
             )
 

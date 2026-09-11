@@ -7,6 +7,7 @@ import os
 import socket
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import zipfile
@@ -271,6 +272,15 @@ def test_socks_context_generates_scoped_launchers_without_execution(workspace, m
         routed.id, "nmap", ("-sT", "10.30.0.0/24"), launcher="namespace"
     )
     assert routed_plan["argv"][:4] == ["ip", "netns", "exec", routed_namespace]
+
+    execution = service.execute_launcher(
+        context.id,
+        sys.executable,
+        ("-c", "print('context-execution-ok')"),
+    )
+    assert execution["returncode"] == 0
+    assert execution["failed_steps"] == []
+    assert "context-execution-ok" in str(execution["output"])
 
 
 def test_routed_namespace_prepare_and_remove_persist_exact_manifest(workspace, monkeypatch) -> None:

@@ -93,6 +93,87 @@ class TopologyService:
         lines.append(f"Generated at {utc_now()}")
         return "\n".join(lines)
 
+    def graph(self) -> dict[str, object]:
+        """Return an evidence-oriented graph for interactive clients.
+
+        Numeric IDs are namespaced by entity type, so a repeated address or
+        database ID cannot accidentally merge a host, network and service in
+        the frontend. Edges remain labelled as observations; they are not
+        promoted to verified access paths.
+        """
+
+        observations = self.observations
+        hosts = self.workspace.hosts.list()
+        networks = observations.list_table("networks")
+        interfaces = observations.list_table("interfaces")
+        services = observations.list_table("services")
+        nodes: list[dict[str, object]] = [
+            {"id": "attacker", "kind": "operator", "label": "Conduit / Kali"}
+        ]
+        edges: list[dict[str, object]] = []
+        network_ids: dict[tuple[str, str], str] = {}
+        for network in networks:
+            scope = str(network.get("scope", "default"))
+            cidr = str(network["cidr"])
+            node_id = f"network:{network['id']}"
+            network_ids[(scope, cidr)] = node_id
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "network",
+                    "label": _network_label(network),
+                    "scope": scope,
+                    "cidr": cidr,
+                    "evidence": network.get("source_id"),
+                }
+            )
+            edges.append({"source": "attacker", "target": node_id, "relation": "observed"})
+        for host in hosts:
+            host_id = f"host:{host.id}"
+            nodes.append(
+                {
+                    "id": host_id,
+                    "kind": "host",
+                    "label": str(host.name or host.ip),
+                    "address": str(host.ip),
+                    "status": str(host.status),
+                }
+            )
+        for interface in interfaces:
+            host_id = f"host:{interface['host_id']}"
+            network_id = network_ids.get(
+                (
+                    str(interface.get("network_scope", "default")),
+                    str(interface["network"]),
+                )
+            )
+            if network_id is not None:
+                edges.append(
+                    {
+                        "source": network_id,
+                        "target": host_id,
+                        "relation": "interface_observed",
+                        "address": interface.get("ip"),
+                    }
+                )
+        for service in services:
+            host_id = f"host:{service['host_id']}"
+            service_id = f"service:{service['id']}"
+            address = str(service.get("address") or "*")
+            port = service.get("port")
+            label = f"{address}:{port}" if port is not None else address
+            nodes.append(
+                {
+                    "id": service_id,
+                    "kind": "service",
+                    "label": label,
+                    "protocol": service.get("protocol"),
+                    "state": service.get("state"),
+                }
+            )
+            edges.append({"source": host_id, "target": service_id, "relation": "service_observed"})
+        return {"generated_at": utc_now(), "nodes": nodes, "edges": edges}
+
     def render_dot(self) -> str:
         """Render Graphviz DOT without requiring Graphviz to be installed."""
 

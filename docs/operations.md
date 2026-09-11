@@ -124,15 +124,19 @@ binários dinamicamente ligados. UDP, binários estáticos e protocolos que igno
 outra capacidade.
 
 Com o contexto ativo, `POST /api/v2/workspaces/{id}/contexts/{context_id}/launcher` gera um
-launcher sem executar o programa. O modo `environment` retorna `ALL_PROXY`, `HTTP_PROXY`,
-`HTTPS_PROXY` e um `argv` estruturado; o modo `proxychains` grava uma configuração sem segredos
-no diretório operacional do contexto e retorna o comando correspondente. Ambos deixam explícito
-que UDP, ICMP e binários estaticamente ligados não são encaminhados automaticamente.
+launcher revisável. O modo `environment` retorna `ALL_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY` e um
+`argv` estruturado; o modo `proxychains` grava uma configuração sem segredos no diretório
+operacional do contexto. Depois da revisão, `POST .../contexts/{context_id}/execute` executa a
+mesma lista de argumentos como uma tarefa assíncrona, sem shell livre, com timeout e saída limitada
+para a área de Atividade. Copiar o comando continua disponível, mas não é necessário no fluxo
+normal. UDP, ICMP e binários estaticamente ligados não são encaminhados automaticamente.
 
-Contextos roteados permanecem desabilitados até o helper de namespace, o manifesto de versão do
-adaptador e os testes de contrato estarem instalados. O manifesto precisa declarar
-`contract = "ctfws-routed-context-v1"`, fixar `version` e coincidir com
-`CTFWS_LIGOLO_VERSION`; `operator-selected` permanece bloqueado. O helper expõe um plano de aplicação e um
+Contextos roteados permanecem indisponíveis até o helper de namespace, o manifesto de versão do
+adaptador e os testes de contrato estarem instalados. O Conduit fixa inicialmente o Ligolo-ng
+`0.9.1`, usando os artefatos oficiais e seus checksums publicados. O manifesto precisa declarar
+`contract = "ctfws-routed-context-v1"`, fixar `version`, caminhos dos dois binários e seus
+SHA-256; `CTFWS_LIGOLO_VERSION` apenas identifica a instalação e não substitui a verificação dos
+arquivos. O helper expõe um plano de aplicação e um
 plano de limpeza reverso (`.../namespace-plan` e `.../namespace-cleanup-plan`) e valida o lote
 inteiro antes de executar qualquer operação privilegiada. Ele aceita somente operações tipadas
 do workspace; a rota padrão e o DNS global da Kali não são substituídos.
@@ -149,8 +153,9 @@ curl -X POST 'http://127.0.0.1:8765/api/v2/workspaces/1/contexts/3/namespace/rem
 ```
 
 Preparar o namespace não inicia Ligolo, não altera a rota padrão e não marca o contexto como
-ativo. O launcher `ip netns exec ...` só é gerado após transporte e estado operacional serem
-confirmados; a instalação não habilita esse serviço automaticamente.
+ativo. O diagnóstico mostra separadamente a presença do helper, a versão, os checksums e os
+binários. Um contexto só é oferecido como ativo quando transporte, namespace e destino tiverem
+provas próprias; a instalação não habilita o helper automaticamente.
 
 ## Reinício e retomada
 

@@ -12,6 +12,7 @@ from ctfws.core.limits import max_file_bytes, max_workspace_bytes, retention_day
 from ctfws.core.paths import WORKSPACE_DIRS, WorkspacePaths
 from ctfws.core.process import process_identity
 from ctfws.database.db import SCHEMA_VERSION, Database
+from ctfws.pivot.manifest import ligolo_manifest_status
 from ctfws.services.engine import EngineLock
 from ctfws.services.maintenance import workspace_usage
 
@@ -91,6 +92,16 @@ class WorkspaceDoctor:
                     optional=True,
                 )
             )
+
+        ligolo = ligolo_manifest_status()
+        checks.append(
+            DoctorCheck(
+                "tool:ligolo-contract",
+                ligolo.valid,
+                ligolo.reason,
+                optional=True,
+            )
+        )
 
         for package in ("textual", "fastapi", "uvicorn", "websockets"):
             checks.append(
