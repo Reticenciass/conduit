@@ -442,6 +442,7 @@ def test_team_vault_secret_creation_requires_workspace_admin(workspace, monkeypa
     monkeypatch.setenv("CTFWS_AUTH_REQUIRED", "1")
     monkeypatch.setenv("CTFWS_BOOTSTRAP_TOKEN", "vault-bootstrap")
     monkeypatch.setenv("CTFWS_REQUIRE_MEMBERSHIP", "1")
+    monkeypatch.setenv("CTFWS_ACCOUNTS_PATH", str(workspace.paths.root / "accounts.json"))
     with TestClient(create_app(workspace.paths)) as client:
         admin_login = client.post("/api/v2/auth/login", json={"bootstrap_token": "vault-bootstrap"})
         assert admin_login.status_code == 200

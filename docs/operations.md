@@ -21,6 +21,15 @@ guarde-o com segurança, faça o primeiro login e crie as contas locais antes de
 acesso. Uma reinstalação preserva o arquivo de ambiente existente e não troca o código sem uma
 ação administrativa explícita.
 
+Na tela de login, cole o valor de `CTFWS_BOOTSTRAP_TOKEN` no campo **Código de bootstrap**.
+Esse acesso é um administrador inicial para provisionamento; ele não cria uma conta local
+automaticamente. Depois de entrar, abra **Configurações → Contas**, informe usuário, senha com
+no mínimo 12 caracteres e papel, e clique em **Criar conta**. Escolha `Operador` para quem pode
+executar operações autorizadas, `Observador` para consulta e `Administrador` somente quando a
+gestão de contas for necessária. Não existe autorregistro público: permitiria que qualquer pessoa
+com acesso à interface criasse um operador. O código de bootstrap e as senhas nunca devem ser
+enviados para o chat ou colocados em comandos e logs.
+
 ## Fluxo guiado
 
 1. Em **Conectar máquina**, cole um comando SSH. O parser aceita somente destino, porta, chave,
@@ -173,6 +182,16 @@ em memória para a conexão AsyncSSH; perfis nunca retornam o conteúdo do segre
 workspace; contas locais persistentes e validação OIDC funcionam no motor único, mas quotas por
 membro, associação entre workspaces e isolamento entre organizações precisam de um gateway
 empresarial antes de serem considerados produção multi-tenant.
+
+## Chaves de host SSH
+
+Conexões novas não aceitam uma chave desconhecida silenciosamente. O Conduit interrompe o teste,
+mostra o tipo de chave e a fingerprint SHA-256 e oferece **Confiar e continuar**. Compare a
+fingerprint com uma fonte confiável do laboratório antes de confirmar. A chave confirmada é gravada
+no `known_hosts` do usuário do motor (ou no arquivo explicitamente informado no perfil), e o teste
+é repetido com a senha temporária ainda mantida somente em memória. Se a chave mudar depois de
+ser confiada, a conexão continua falhando como `host_key_changed`; remova ou revise a entrada
+manualmente após investigar a causa. Recusar a confirmação deixa o perfil sem conexão.
 
 Para integrar um IdP OIDC no motor, configure `CTFWS_OIDC_ISSUER`,
 `CTFWS_OIDC_AUDIENCE` e, opcionalmente, `CTFWS_OIDC_JWKS_URL`. O bearer JWT precisa ser assinado

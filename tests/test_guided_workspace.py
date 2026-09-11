@@ -78,6 +78,55 @@ def test_ssh_error_redacts_temporary_secret() -> None:
     assert "<redacted>" in safe
 
 
+def test_unknown_host_key_requires_matching_explicit_trust(
+    workspace, tmp_path, monkeypatch
+) -> None:
+    profile = workspace.connections.create(
+        ConnectionProfileCreate(
+            name="untrusted-host",
+            host="192.0.2.99",
+            user="analyst",
+            known_hosts_file=str(tmp_path / "known_hosts"),
+        )
+    )
+
+    class FakeKey:
+        def get_fingerprint(self, _algorithm: str = "sha256") -> str:
+            return "SHA256:test-fingerprint"
+
+        def get_algorithm(self) -> str:
+            return "ssh-ed25519"
+
+        def export_public_key(self, _format: str = "openssh") -> bytes:
+            return b"ssh-ed25519 AAAATESTKEY"
+
+    class FakeAsyncSSH:
+        async def connect(self, **kwargs: object) -> object:
+            client_factory = kwargs["client_factory"]
+            client = client_factory()  # type: ignore[operator]
+            client.validate_host_public_key("192.0.2.99", "192.0.2.99", 22, FakeKey())
+            raise RuntimeError("Host key is not trusted")
+
+    monkeypatch.setattr("ctfws.services.ssh.asyncssh", FakeAsyncSSH())
+    manager = AsyncSSHConnectionManager(workspace)
+
+    with pytest.raises(RuntimeError, match="not trusted"):
+        asyncio.run(manager.connect(profile.id))
+
+    pending = manager.pending_host_key(profile.id)
+    assert pending is not None
+    assert pending["fingerprint"] == "SHA256:test-fingerprint"
+    with pytest.raises(ValueError, match="fingerprint mudou"):
+        manager.trust_host_key(profile.id, "SHA256:wrong")
+
+    trusted = manager.trust_host_key(profile.id, "SHA256:test-fingerprint")
+    assert trusted["fingerprint"] == "SHA256:test-fingerprint"
+    assert (tmp_path / "known_hosts").read_text(encoding="utf-8") == (
+        "192.0.2.99 ssh-ed25519 AAAATESTKEY\n"
+    )
+    assert manager.pending_host_key(profile.id) is None
+
+
 def test_managed_local_terminal_has_independent_record(workspace) -> None:
     manager = TerminalManager(workspace)
     terminal = manager.start(TerminalCreate(name="local-test", kind=TerminalKind.LOCAL))

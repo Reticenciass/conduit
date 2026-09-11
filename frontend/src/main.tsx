@@ -6,15 +6,18 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
-type View = "overview" | "machines" | "terminals" | "tunnels" | "files" | "tools" | "activity";
+type View = "overview" | "machines" | "terminals" | "tunnels" | "files" | "tools" | "activity" | "settings";
 type Json = Record<string, unknown>;
 type Profile = Json & { id: number; name: string; host: string; user: string; port: number; state: string };
 type TerminalRow = Json & { id: number; name?: string; context_label: string; status: string; sharing?: string };
+type CredentialKind = "password" | "key_passphrase";
+type HostKeyRequest = { connectionId: number; password?: string; credentialKind?: CredentialKind; hostKey: Json };
 
 const api = "/api/v1";
+const apiV2 = "/api/v2";
 const tokenKey = "ctfws.auth.token";
 const viewKey = "ctfws.ui.view";
-const viewNames: View[] = ["overview", "machines", "terminals", "tunnels", "files", "tools", "activity"];
+const viewNames: View[] = ["overview", "machines", "terminals", "tunnels", "files", "tools", "activity", "settings"];
 type ApiFailure = Error & { status?: number };
 
 function initialView(): View {
@@ -23,10 +26,18 @@ function initialView(): View {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  return requestAt<T>(api, path, options);
+}
+
+async function requestV2<T>(path: string, options?: RequestInit): Promise<T> {
+  return requestAt<T>(apiV2, path, options);
+}
+
+async function requestAt<T>(base: string, path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   const token = localStorage.getItem(tokenKey);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(api + path, { ...options, headers });
+  const response = await fetch(base + path, { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const payload = body as Json;
@@ -55,29 +66,40 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Json[]>([]);
+  const [role, setRole] = useState<string | null>(null);
+  const [hostKeyRequest, setHostKeyRequest] = useState<HostKeyRequest | null>(null);
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
 
   const refresh = async () => {
     try {
-      const [nextSummary, nextProfiles, nextTerminals, nextPaths, nextHosts] = await Promise.all([
+      const [nextSummary, nextProfiles, nextTerminals, nextPaths, nextHosts, session] = await Promise.all([
         request<Json>("/summary"),
         request<Profile[]>("/connections"),
         request<TerminalRow[]>("/terminals"),
         request<Json[]>("/paths"),
         request<Json[]>("/hosts"),
+        requestV2<Json>("/auth/session"),
       ]);
       setSummary(nextSummary);
       setProfiles(nextProfiles);
       setTerminals(nextTerminals);
       setPaths(nextPaths);
       setHosts(nextHosts);
+      setRole(session.authenticated ? String(session.role ?? "") : null);
       setNotice("Motor online");
     } catch (error) {
-      if ((error as ApiFailure).status === 401) setNeedsLogin(true);
+      if ((error as ApiFailure).status === 401) {
+        setRole(null);
+        setNeedsLogin(true);
+      }
       setNotice(`Atenção: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   refreshRef.current = refresh;
+
+  useEffect(() => {
+    if (view === "settings" && role !== "admin") setView("overview");
+  }, [role, view]);
 
   useEffect(() => { void refresh(); }, []);
 
@@ -214,6 +236,7 @@ function App() {
 
   return <div className="app-shell">
     {needsLogin && <LoginPanel onLoggedIn={() => { setNeedsLogin(false); void refresh(); }} />}
+    {hostKeyRequest && <HostKeyPrompt request={hostKeyRequest} onCancel={() => setHostKeyRequest(null)} onConfirm={acceptHostKey} />}
     <header className="topbar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Conduit</span></div>
       <div className="global-search"><input aria-label="Buscar no workspace" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="Buscar máquinas, redes, notas…" />{searchQuery.trim().length >= 2 && <div className="search-results" role="listbox">{searchResults.length ? searchResults.map((result, index) => <button type="button" className="search-result" key={`${String(result.kind)}-${String(result.label)}-${index}`} onClick={() => openSearchResult(String(result.kind))}><span className="search-kind">{String(result.kind)}</span><span><strong>#{String(result.label)}</strong><small>{String(result.detail)}</small></span></button>) : <div className="search-empty">Nenhum resultado</div>}</div>}</div><div className="top-status"><span className="status-dot" />{notice}</div>
@@ -225,6 +248,7 @@ function App() {
           ["overview", "Visão geral", "◈"], ["machines", "Máquinas", "▣"],
           ["terminals", "Terminais", "⌘"], ["tunnels", "Túneis e contextos", "⇄"],
           ["files", "Arquivos e evidências", "▧"], ["tools", "Ferramentas", "⚒"], ["activity", "Atividade", "◷"],
+          ...(role === "admin" ? [["settings", "Configurações", "⚙"]] : []),
         ] as [View, string, string][]).map(([key, label, icon]) =>
           <button key={key} className={view === key ? "nav-item active" : "nav-item"} onClick={() => setView(key)}>
             <span>{icon}</span>{label}
@@ -242,6 +266,7 @@ function App() {
         {view === "files" && <Files profiles={profiles} setNotice={setNotice} />}
         {view === "tools" && <Tools profiles={profiles} setNotice={setNotice} />}
         {view === "activity" && <Activity />}
+        {view === "settings" && role === "admin" && <AccountManagement setNotice={setNotice} onLogout={logout} />}
       </main>
     </div>
     {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={(nextView) => { setView(nextView); setPaletteOpen(false); }} onConnect={() => { setConnectionOpen(true); setPaletteOpen(false); }} onRefresh={() => { setPaletteOpen(false); void refresh(); }} />}
@@ -255,6 +280,17 @@ function App() {
         body: JSON.stringify(password ? { password, ...(credentialKind ? { kind: credentialKind } : {}) } : {}),
       });
       if (String(tested.state) !== "ready") {
+        const hostKey = tested.host_key;
+        if (hostKey && typeof hostKey === "object") {
+          setHostKeyRequest({
+            connectionId,
+            password,
+            credentialKind,
+            hostKey: hostKey as Json,
+          });
+          setNotice("Aguardando confirmação da chave do host.");
+          return;
+        }
         setNotice(`Conexão não validada: ${String(tested.error ?? tested.state)}`);
         return;
       }
@@ -263,15 +299,40 @@ function App() {
       setView("activity");
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   }
+
+  async function acceptHostKey() {
+    if (!hostKeyRequest) return;
+    const current = hostKeyRequest;
+    try {
+      await request<Json>(`/connections/${current.connectionId}/trust-host-key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fingerprint: current.hostKey.fingerprint }),
+      });
+      setHostKeyRequest(null);
+      setNotice("Chave do host confiada. Revalidando a conexão…");
+      await testAndInspect(current.connectionId, current.password, current.credentialKind);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function logout() {
+    try { await requestV2<Json>("/auth/logout", { method: "POST" }); } catch { /* session may already be gone */ }
+    localStorage.removeItem(tokenKey);
+    setRole(null);
+    setView("overview");
+    setNeedsLogin(true);
+  }
 }
 
-function viewLabel(view: View) { return ({ overview: "Visão geral", machines: "Máquinas", terminals: "Terminais", tunnels: "Túneis e contextos", files: "Arquivos e evidências", tools: "Ferramentas", activity: "Atividade" })[view]; }
+function viewLabel(view: View) { return ({ overview: "Visão geral", machines: "Máquinas", terminals: "Terminais", tunnels: "Túneis e contextos", files: "Arquivos e evidências", tools: "Ferramentas", activity: "Atividade", settings: "Configurações" })[view]; }
 
 function Overview({ summary, profiles, terminals, paths, onConnect, onTerminal, onInspect, onLocal }: { summary: Json; profiles: Profile[]; terminals: TerminalRow[]; paths: Json[]; onConnect: () => void; onTerminal: (id: number) => void; onInspect: (id: number) => void; onLocal: () => void }) {
   return <>
     <section className="metrics">{([["máquinas", summary.hosts ?? 0], ["conexões", summary.connections ?? 0], ["terminais ativos", summary.active_terminals ?? 0], ["túneis", summary.forwards ?? 0]] as [string, unknown][]).map(([label, value]) => <div className="metric-card" key={label}><div className="metric-label">{label}</div><div className="metric-value">{String(value)}</div></div>)}</section>
     <div className="content-grid"><section className="panel span-two"><PanelHeader title="Comece por aqui" subtitle="O caminho guiado do workspace" /><div className="quick-actions"><button onClick={onConnect}><b>1</b><span><strong>Conecte uma máquina</strong><small>Cole seu SSH e valide a identidade</small></span><i>→</i></button><button onClick={() => profiles[0] && onInspect(profiles[0].id)} disabled={!profiles.length}><b>2</b><span><strong>Inspecione a rede</strong><small>Interfaces, rotas, vizinhos e serviços</small></span><i>→</i></button><button onClick={() => profiles[0] && onTerminal(profiles[0].id)} disabled={!profiles.length}><b>3</b><span><strong>Abra um terminal</strong><small>Crie abas independentes sem repetir o SSH</small></span><i>→</i></button></div></section>
-      <section className="panel"><PanelHeader title="Conexões" action={<span className="pill">{profiles.length} salvas</span>} />{profiles.length ? profiles.map(profile => <div className="list-row" key={profile.id}><div className="row-icon">⌁</div><div className="row-main"><strong>{profile.name}</strong><small>{profile.user}@{profile.host}:{profile.port}</small></div><span className={`state ${profile.state}`}>{profile.state}</span><button className="icon-button" title="Abrir terminal" onClick={() => onTerminal(profile.id)}>↗</button></div>) : <Empty text="Nenhuma conexão salva" />}</section>
+      <section className="panel"><PanelHeader title="Conexões" action={<span className="pill">{profiles.length} salvas</span>} />{profiles.length ? profiles.map(profile => <div className="list-row" key={profile.id}><div className="row-icon">⌁</div><div className="row-main"><strong>{profile.name}</strong><small>{profile.user}@{profile.host}:{profile.port}</small>{typeof profile.last_error === "string" && <small className="connection-error">{profile.last_error}</small>}</div><span className={`state ${profile.state}`}>{profile.state}</span><button className="icon-button" title="Abrir terminal" onClick={() => onTerminal(profile.id)}>↗</button></div>) : <Empty text="Nenhuma conexão salva" />}</section>
       <section className="panel"><PanelHeader title="Terminais recentes" action={<button className="text-button" onClick={onLocal}>+ Novo</button>} />{terminals.length ? terminals.slice(-5).reverse().map(row => <div className="list-row" key={row.id}><div className="row-icon terminal-icon">⌘</div><div className="row-main"><strong>{row.context_label}</strong><small>Terminal #{row.id}</small></div><span className={`state ${row.status}`}>{row.status}</span></div>) : <Empty text="Abra seu primeiro terminal" />}</section>
       <section className="panel span-two"><PanelHeader title="Mapa de acesso" subtitle="Inferências separadas de verificações reais" action={<span className="pill">{paths.length} caminhos</span>} />{paths.length ? <div className="path-list">{paths.slice(0, 8).map(path => <div className="path-row" key={String(path.id)}><span className={`path-state ${String(path.state)}`}>{String(path.state)}</span><strong>{String(path.target_address)}{path.target_port ? `:${String(path.target_port)}` : ""}</strong><span className="muted">{String(path.reason ?? "")}</span></div>)}</div> : <Empty text="Inspecione uma máquina para montar o mapa" />}</section>
     </div>
@@ -600,6 +661,48 @@ function Activity() {
   return <div className="content-grid"><section className="panel span-two"><PanelHeader title="Retomar ambiente" subtitle="A retomada exige uma escolha explícita e não reenvia comandos de terminal" />{resumePlan.length ? <><div className="resume-list">{resumePlan.map(item => { const reference = String(item.resource_ref ?? ""); return <label className="resume-item" key={reference}><input type="checkbox" checked={selectedResume.includes(reference)} onChange={() => toggleResume(reference)} /><span><strong>{String(item.name)}</strong><small>{reference} · {String(item.action)} · {String(item.reason)}</small></span></label>; })}</div><div className="panel-actions"><button className="button primary" disabled={!selectedResume.length} onClick={() => void applyResume()}>Retomar selecionados</button>{resumeMessage && <span className="notice-message inline-notice">{resumeMessage}</span>}</div></> : <Empty text="Nenhum recurso precisa de retomada" />}</section><section className="panel span-two"><PanelHeader title="Jobs" subtitle="Tarefas persistidas pelo motor" />{jobs.length ? jobs.map(job => <div className="list-row" key={String(job.id)}><div className="row-icon">◷</div><div className="row-main"><strong>{String(job.kind)}</strong><small>Tarefa #{String(job.id)} · {String(job.current_step ?? "aguardando")}</small></div><span className={`state ${String(job.status)}`}>{String(job.status)} · {String(job.progress)}%</span></div>) : <Empty text="Nenhuma tarefa recente" />}</section><section className="panel span-two"><PanelHeader title="Auditoria" subtitle="Quem solicitou cada mutação e qual foi o resultado" />{audit.length ? audit.slice(0, 30).map(item => <div className="list-row" key={String(item.id)}><div className="row-icon">◉</div><div className="row-main"><strong>{String(item.action)}</strong><small>{String(item.actor)} · {String(item.resource_type)} · {String(item.created_at)}</small></div><span className={`state ${String(item.result)}`}>{String(item.result)}</span></div>) : <Empty text="Nenhum evento de auditoria" />}</section></div>;
 }
 
+function HostKeyPrompt({ request, onCancel, onConfirm }: { request: HostKeyRequest; onCancel: () => void; onConfirm: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const hostKey = request.hostKey;
+  const confirm = async () => {
+    setBusy(true);
+    try { await onConfirm(); } finally { setBusy(false); }
+  };
+  return <div className="login-overlay"><section className="panel login-panel host-key-prompt" role="dialog" aria-modal="true" aria-labelledby="host-key-title"><div className="eyebrow">VERIFICAÇÃO DE IDENTIDADE</div><h2 id="host-key-title">Servidor SSH desconhecido</h2><p>O servidor respondeu com uma chave que ainda não está na lista de confiança do Conduit.</p><div className="host-key-details"><div><span>Destino</span><strong>{String(hostKey.host ?? hostKey.address)}:{String(hostKey.port ?? 22)}</strong></div><div><span>Tipo de chave</span><strong>{String(hostKey.algorithm ?? "desconhecido")}</strong></div><div><span>Fingerprint SHA-256</span><code>{String(hostKey.fingerprint ?? "não disponível")}</code></div></div><p className="host-key-warning">Compare esta fingerprint com uma fonte confiável do ambiente antes de continuar. Confiar na chave sem conferir pode permitir um ataque de intermediário.</p><div className="panel-actions"><button className="button secondary" disabled={busy} onClick={onCancel}>Não confiar</button><button className="button primary" disabled={busy || !hostKey.fingerprint} onClick={() => void confirm()}>{busy ? "Revalidando…" : "Confiar e continuar"}</button></div></section></div>;
+}
+
+function AccountManagement({ setNotice, onLogout }: { setNotice: (value: string) => void; onLogout: () => Promise<void> }) {
+  const [accounts, setAccounts] = useState<Json[]>([]);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [role, setRole] = useState("operator");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try { setAccounts(await requestV2<Json[]>("/auth/accounts")); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  useEffect(() => { void load(); }, []);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError("");
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername) { setError("Informe um usuário."); return; }
+    if (password.length < 12) { setError("A senha precisa ter pelo menos 12 caracteres."); return; }
+    if (password !== confirmation) { setError("A confirmação da senha não corresponde."); return; }
+    setBusy(true);
+    try {
+      await requestV2<Json>("/auth/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: normalizedUsername, password, role }) });
+      setUsername(""); setPassword(""); setConfirmation(""); setRole("operator");
+      setNotice(`Conta ${normalizedUsername} criada com sucesso.`);
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
+  return <div className="content-grid"><section className="panel"><PanelHeader title="Contas locais" subtitle="Somente administradores podem criar contas. Senhas nunca são exibidas." />{accounts.length ? accounts.map(account => <div className="list-row" key={String(account.username)}><div className="row-icon">●</div><div className="row-main"><strong>{String(account.username)}</strong><small>Conta local</small></div><span className="state ready">{String(account.role)}</span></div>) : <Empty text="Nenhuma conta local criada" />}<div className="panel-actions"><button className="button secondary" onClick={() => void onLogout()}>Sair</button></div></section><section className="panel"><PanelHeader title="Criar conta" subtitle="Use uma senha forte com pelo menos 12 caracteres." /><form className="form-grid account-form" onSubmit={(event) => void submit(event)}><label>Usuário<input value={username} onChange={event => setUsername(event.target.value)} autoComplete="off" placeholder="operador" required /></label><label>Papel<select value={role} onChange={event => setRole(event.target.value)}><option value="operator">Operador</option><option value="observer">Observador</option><option value="admin">Administrador</option></select></label><label>Senha<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" minLength={12} required /></label><label>Confirmar senha<input type="password" value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="new-password" minLength={12} required /></label><div className="panel-actions"><button className="button primary" type="submit" disabled={busy}>{busy ? "Criando…" : "Criar conta"}</button></div></form>{error && <div className="error-message">{error}</div>}</section></div>;
+}
+
 function LoginPanel({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [bootstrap, setBootstrap] = useState("");
   const [username, setUsername] = useState("");
@@ -629,7 +732,7 @@ function LoginPanel({ onLoggedIn }: { onLoggedIn: () => void }) {
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="login-overlay"><section className="panel login-panel"><div className="eyebrow">SESSÃO PROTEGIDA</div><h2>Entrar no Conduit</h2><p>Use o código de bootstrap individual, uma conta local ou o token emitido pelo IdP.</p><form onSubmit={(event) => void submit(event)}><label>Código de bootstrap<input value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} placeholder="opcional" autoComplete="one-time-code" /></label><div className="login-separator">ou conta local</div><label>Usuário<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label>Senha<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>{oidcEnabled && <><div className="login-separator">ou OIDC</div><label>Token emitido pelo IdP<input value={oidcToken} onChange={(event) => setOidcToken(event.target.value)} placeholder="JWT temporário" /></label></>}<button className="button primary" type="submit">Entrar</button></form>{error && <div className="error-message">{error}</div>}</section></div>;
+  return <div className="login-overlay"><section className="panel login-panel"><div className="eyebrow">SESSÃO PROTEGIDA</div><h2>Entrar no Conduit</h2><p>Use uma conta local, o código de bootstrap do primeiro acesso ou o token emitido pelo IdP.</p><div className="login-help"><strong>Primeiro acesso?</strong><span>Use o código mostrado pelo instalador no campo de bootstrap. Depois de entrar, abra <b>Configurações → Contas</b> para criar os usuários da equipe.</span></div><form onSubmit={(event) => void submit(event)}><label>Código de bootstrap<input value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} placeholder="opcional" autoComplete="one-time-code" /></label><div className="login-separator">ou conta local</div><label>Usuário<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label>Senha<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>{oidcEnabled && <><div className="login-separator">ou OIDC</div><label>Token emitido pelo IdP<input value={oidcToken} onChange={(event) => setOidcToken(event.target.value)} placeholder="JWT temporário" /></label></>}<button className="button primary" type="submit">Entrar</button></form>{error && <div className="error-message">{error}</div>}</section></div>;
 }
 
 function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value: string) => void }) {

@@ -263,7 +263,12 @@ class AuthManager:
         self._bootstrap = os.getenv("CTFWS_BOOTSTRAP_TOKEN") or secrets.token_urlsafe(24)
         self._sessions: dict[str, Principal] = {}
         self._revoked_tokens: dict[str, None] = {}
-        self._accounts_path = accounts_path or Path.home() / ".config" / "ctfws" / "accounts.json"
+        configured_accounts_path = os.getenv("CTFWS_ACCOUNTS_PATH")
+        self._accounts_path = accounts_path or (
+            Path(configured_accounts_path)
+            if configured_accounts_path
+            else Path.home() / ".config" / "ctfws" / "accounts.json"
+        )
 
     def login(self, bootstrap_token: str) -> str:
         if not hmac.compare_digest(bootstrap_token, self._bootstrap):
@@ -291,13 +296,16 @@ class AuthManager:
         return session
 
     def create_account(self, username: str, password: str, role: str) -> None:
+        username = username.strip()
         if role not in {"admin", "operator", "observer"}:
             raise ValueError("Papel precisa ser admin, operator ou observer.")
-        if not username or len(password) < 12:
+        if not username or len(username) > 120 or len(password) < 12:
             raise ValueError(
                 "Usuário é obrigatório e a senha precisa ter pelo menos 12 caracteres."
             )
         records = self._accounts()
+        if username in records:
+            raise ValueError("Já existe uma conta com esse usuário.")
         salt = secrets.token_bytes(16)
         iterations = 600_000
         digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)

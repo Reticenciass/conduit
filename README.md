@@ -290,8 +290,17 @@ workspace, the systemd service, and `/usr/local/bin/conduit`:
 sudo bash deploy/install-linux.sh
 ```
 
-The installer prints the initial bootstrap code once. Store it securely, perform the first login,
-and configure accounts before sharing access.
+The installer prints the initial bootstrap code once. Store it securely and enter it in the
+**Bootstrap code** field on the first login. This creates an initial administrator session; it does
+not create a local account automatically. After login, open **Settings → Accounts**, choose a
+username, a password of at least 12 characters, and a role, then click **Create account**. Use
+**Operator** for normal authorized operations, **Observer** for read-only access, and **Administrator**
+only for account and policy management. Public self-registration is intentionally disabled.
+
+New SSH hosts are also handled interactively. Conduit stops before authentication, shows the host
+key type and SHA-256 fingerprint, and asks for an explicit confirmation. Verify the fingerprint
+out-of-band before choosing **Trust and continue**; the key is then recorded in the engine user's
+`known_hosts` file and the connection test is retried. Changed keys remain a hard failure.
 
 To inspect the service:
 

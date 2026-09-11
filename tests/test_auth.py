@@ -70,3 +70,15 @@ def test_oidc_verifies_signature_claims_and_role_mapping(tmp_path: Path, monkeyp
     assert auth.authenticate(token) is None
     with pytest.raises(PermissionError, match="revogado"):
         auth.login_oidc(token)
+
+
+def test_local_accounts_are_persisted_without_overwriting_existing_users(tmp_path: Path) -> None:
+    auth = AuthManager(tmp_path / "accounts.json")
+    auth.create_account(" operator ", "operator-password", "operator")
+
+    assert auth.accounts() == [{"username": "operator", "role": "operator"}]
+    session = auth.login_account("operator", "operator-password")
+    assert auth.authenticate(session).subject == "operator"  # type: ignore[union-attr]
+
+    with pytest.raises(ValueError, match="Já existe"):
+        auth.create_account("operator", "another-password", "observer")

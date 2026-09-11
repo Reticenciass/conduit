@@ -132,6 +132,12 @@ class AccountRequest(BaseModel):
     role: str = Field(default="operator", max_length=20)
 
 
+class HostKeyTrustRequest(BaseModel):
+    """Fingerprint explicitly confirmed by the operator for a pending host key."""
+
+    fingerprint: str = Field(min_length=10, max_length=200)
+
+
 class SecretRequest(BaseModel):
     """Secret input kept out of profile responses and process arguments."""
 
@@ -1407,7 +1413,7 @@ def create_app(paths: WorkspacePaths) -> Any:
             )
         except Exception:
             current = connections.get(connection_id)
-            return {
+            result: dict[str, Any] = {
                 "id": profile.id,
                 "state": current.state.value if current is not None else "error",
                 "error": (
@@ -1416,12 +1422,33 @@ def create_app(paths: WorkspacePaths) -> Any:
                     else "A conexão SSH não pôde ser estabelecida."
                 ),
             }
+            pending_host_key = ssh.pending_host_key(connection_id)
+            if pending_host_key is not None:
+                result["host_key"] = {
+                    key: value for key, value in pending_host_key.items() if key != "public_key"
+                }
+            return result
         current = connections.get(connection_id)
         return {
             "id": profile.id,
             "state": current.state.value if current is not None else "ready",
             "error": None,
         }
+
+    @app.post("/api/v1/connections/{connection_id}/trust-host-key")
+    @app.post("/api/v2/workspaces/{workspace_id}/connections/{connection_id}/trust-host-key")
+    def connection_trust_host_key(
+        connection_id: int,
+        data: HostKeyTrustRequest,
+        workspace_id: int | None = None,
+    ) -> dict[str, str | int]:
+        """Persist a host key only after matching the pending fingerprint."""
+
+        require_workspace(workspace_id)
+        try:
+            return ssh.trust_host_key(connection_id, data.fingerprint)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post("/api/v1/connections/{connection_id}/disconnect")
     @app.post("/api/v2/workspaces/{workspace_id}/connections/{connection_id}/disconnect")

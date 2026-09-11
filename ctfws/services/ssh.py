@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
+from ctfws.core.errors import EntityNotFoundError
 from ctfws.models.connection import ConnectionProfileRead, ConnectionState
 from ctfws.services.connections import ConnectionService, classify_ssh_error
 from ctfws.services.workspace import WorkspaceService
@@ -17,6 +20,21 @@ try:
 except ImportError:  # pragma: no cover - optional runtime dependency
     _asyncssh = None
 asyncssh: Any = _asyncssh
+
+
+class _HostKeyCaptureClient(
+    _asyncssh.SSHClient if _asyncssh is not None else object  # type: ignore[misc]
+):
+    """Capture an unknown host key while keeping AsyncSSH fail-closed."""
+
+    def __init__(self, on_unknown: Callable[[str, str, int, Any], None]) -> None:
+        if _asyncssh is not None:
+            super().__init__()
+        self._on_unknown = on_unknown
+
+    def validate_host_public_key(self, host: str, addr: str, port: int, key: Any) -> bool:
+        self._on_unknown(host, addr, port, key)
+        return False
 
 
 class AsyncSSHConnectionManager:
@@ -36,6 +54,7 @@ class AsyncSSHConnectionManager:
         self.connections: dict[int, Any] = {}
         self._chain_connections: dict[int, list[Any]] = {}
         self._connecting: dict[int, Any] = {}
+        self._pending_host_keys: dict[int, dict[str, str | int]] = {}
 
     CAPABILITIES = (
         "exec",
@@ -79,6 +98,7 @@ class AsyncSSHConnectionManager:
             connection, chain_connections = await task
             self.connections[profile_id] = connection
             self._chain_connections[profile_id] = chain_connections
+            self._pending_host_keys.pop(profile_id, None)
             profile = self.workspace.connections.get(profile_id)
             self.workspace.connections.update_runtime(
                 profile_id,
@@ -175,6 +195,11 @@ class AsyncSSHConnectionManager:
                 )
                 if tunnel is not None:
                     kwargs["tunnel"] = tunnel
+                kwargs["client_factory"] = lambda profile_id=profile.id: _HostKeyCaptureClient(
+                    lambda host, addr, port, key: self._capture_host_key(
+                        profile_id, host, addr, port, key
+                    )
+                )
                 connection = await asyncssh.connect(**kwargs)
                 opened.append(connection)
                 tunnel = connection
@@ -248,6 +273,107 @@ class AsyncSSHConnectionManager:
                     affected.add(profile.id)
                     changed = True
         return affected
+
+    def pending_host_key(self, profile_id: int) -> dict[str, str | int] | None:
+        """Return the first untrusted key in a target's jump chain."""
+
+        try:
+            chain = ConnectionService(self.workspace).profile_chain(profile_id)
+        except (EntityNotFoundError, ValueError):
+            chain = []
+        for profile in chain:
+            pending = self._pending_host_keys.get(profile.id)
+            if pending is not None:
+                return dict(pending)
+        return self._pending_host_keys.get(profile_id)
+
+    def trust_host_key(self, profile_id: int, fingerprint: str) -> dict[str, str | int]:
+        """Persist exactly the key shown in the pending confirmation."""
+
+        pending = self.pending_host_key(profile_id)
+        if pending is None:
+            raise ValueError("Não há uma chave de host pendente para esta conexão.")
+        if not hmac.compare_digest(str(pending["fingerprint"]), fingerprint):
+            raise ValueError("A fingerprint mudou; faça uma nova verificação antes de confiar.")
+        profile_id_to_update = int(pending["profile_id"])
+        profile = self.workspace.connections.get(profile_id_to_update)
+        if profile is None:
+            raise ValueError("Conexão não encontrada.")
+        path = self._known_hosts_path(profile)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+        host_pattern = profile.host if profile.port == 22 else f"[{profile.host}]:{profile.port}"
+        public_key = str(pending["public_key"])
+        line = f"{host_pattern} {public_key}\n"
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if line not in existing.splitlines(keepends=True):
+            separator = "" if not existing or existing.endswith("\n") else "\n"
+            path.write_text(existing + separator + line, encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        self._pending_host_keys.pop(profile_id_to_update, None)
+        return {
+            "profile_id": profile_id_to_update,
+            "host": profile.host,
+            "port": profile.port,
+            "fingerprint": fingerprint,
+            "known_hosts_file": str(path),
+        }
+
+    def _capture_host_key(self, profile_id: int, host: str, addr: str, port: int, key: Any) -> None:
+        profile = self.workspace.connections.get(profile_id)
+        if profile is None:
+            return
+        if self._known_host_entry_exists(profile, host, addr, port):
+            # A host which already has a different key must remain a hard
+            # failure. Never turn a changed key into a one-click replacement.
+            raise ValueError("Remote host identification has changed")
+        try:
+            fingerprint = str(key.get_fingerprint("sha256"))
+            algorithm = str(key.get_algorithm())
+            public_key = key.export_public_key("openssh").decode("ascii").strip()
+        except (AttributeError, UnicodeDecodeError, ValueError, TypeError) as error:
+            self.workspace.logger.warning(
+                "Não foi possível preparar confirmação de host key: %s", error
+            )
+            return
+        self._pending_host_keys[profile_id] = {
+            "profile_id": profile_id,
+            "host": host,
+            "address": addr,
+            "port": port,
+            "algorithm": algorithm,
+            "fingerprint": fingerprint,
+            "public_key": public_key,
+        }
+
+    @staticmethod
+    def _known_hosts_path(profile: ConnectionProfileRead) -> Path:
+        return Path(profile.known_hosts_file or (Path.home() / ".ssh" / "known_hosts")).expanduser()
+
+    @classmethod
+    def _known_host_entry_exists(
+        cls, profile: ConnectionProfileRead, host: str, addr: str, port: int
+    ) -> bool:
+        """Tell unknown hosts apart from changed keys without weakening checks."""
+
+        if asyncssh is None:
+            return False
+        path = cls._known_hosts_path(profile)
+        if not path.is_file() or not hasattr(asyncssh, "match_known_hosts"):
+            return False
+        try:
+            trusted, _ca_keys, _revoked, *_ = asyncssh.match_known_hosts(
+                str(path), host, addr, port
+            )
+            return bool(trusted)
+        except (OSError, ValueError, TypeError):
+            return False
 
     @staticmethod
     def _safe_error(error: Exception, *, secret: str | None = None) -> str:
