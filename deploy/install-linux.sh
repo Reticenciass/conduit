@@ -3,6 +3,10 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install -d -m 0755 /opt/ctfws /opt/ctfws/releases
+# systemd's namespace sandboxing validates ReadWritePaths before spawning the
+# helper.  /run/netns is normally created by iproute2 only after the first
+# namespace exists, so create the mount point during installation as well.
+install -d -m 0755 /run/netns
 install -d -m 0750 /var/lib/ctfws /var/lib/ctfws/workspace /etc/ctfws
 if ! id -u ctfws >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/ctfws --shell /usr/sbin/nologin ctfws
