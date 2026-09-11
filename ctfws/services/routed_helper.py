@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 try:  # pragma: no cover - pwd only exists on POSIX.
     import pwd
@@ -22,7 +22,13 @@ except ImportError:  # pragma: no cover - exercised by Windows development.
 
 from ctfws.core.process import process_identity, process_matches
 from ctfws.pivot.manifest import ligolo_manifest_status
-from ctfws.services.workspace import WorkspaceService
+
+
+class RoutedWorkspace(Protocol):
+    """Minimum workspace surface needed by the privileged runtime helper."""
+
+    lab: Any
+    paths: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +146,7 @@ class RoutedNamespaceHelper:
 
     def __init__(
         self,
-        workspace: WorkspaceService,
+        workspace: RoutedWorkspace,
         runner: Any = None,
         socket_path: Path | str | None = None,
     ) -> None:

@@ -5,12 +5,41 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from ctfws.core.paths import WorkspacePaths
 from ctfws.services.routed_helper import RoutedNamespaceHelper
 from ctfws.services.routed_socket import RoutedNamespaceSocketServer
-from ctfws.services.workspace import WorkspaceService
+
+
+@dataclass(slots=True)
+class _LabIdentity:
+    id: int
+
+
+@dataclass(slots=True)
+class _HelperWorkspace:
+    lab: _LabIdentity
+    paths: WorkspacePaths
+
+
+def _read_workspace_identity(paths: WorkspacePaths) -> _HelperWorkspace:
+    """Read only the identity needed by the privileged helper.
+
+    The helper is deliberately not an application service and must not run
+    SQLite migrations or change WAL state while the unprivileged motor owns
+    the workspace.  Keeping this read-only also makes ``ProtectSystem=strict``
+    meaningful for the systemd unit.
+    """
+
+    database_uri = f"file:{paths.database}?mode=ro"
+    with sqlite3.connect(database_uri, uri=True) as connection:
+        row = connection.execute("SELECT id FROM labs LIMIT 1").fetchone()
+    if row is None or not isinstance(row[0], int):
+        raise RuntimeError("O workspace não possui uma identidade válida.")
+    return _HelperWorkspace(lab=_LabIdentity(id=row[0]), paths=paths)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,8 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     if os.name == "nt":
         parser.error("O helper de namespace exige Linux.")
 
-    workspace = WorkspaceService(WorkspacePaths.from_value(args.workspace))
-    # This instance executes locally as the helper; the motor-side instance is socket-backed.
+    paths = WorkspacePaths.from_value(args.workspace)
+    workspace = _read_workspace_identity(paths)
+    # This instance executes locally as the helper; the motor-side instance is
+    # socket-backed. It intentionally has no write-capable application DB.
     helper = RoutedNamespaceHelper(workspace)
     server = RoutedNamespaceSocketServer(helper, args.socket_path)
     signal.signal(signal.SIGTERM, lambda _signum, _frame: server.close())
