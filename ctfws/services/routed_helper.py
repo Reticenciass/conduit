@@ -580,7 +580,11 @@ class RoutedNamespaceHelper:
         path = Path(spec.config_path)
         path.write_text(config, encoding="utf-8")
         try:
-            path.chmod(0o600)
+            # The helper creates this file as root, then the worker drops to
+            # ctfws before exec'ing Ligolo. Group-read is intentional and is
+            # confined to the dedicated ctfws service group; chown is not
+            # reliable when CAP_CHOWN is absent from a hardened helper.
+            path.chmod(0o660)
             if pwd is not None and hasattr(os, "chown"):
                 getpwnam = pwd.getpwnam  # type: ignore[attr-defined]
                 uid = getpwnam("ctfws").pw_uid
