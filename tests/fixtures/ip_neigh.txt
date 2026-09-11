@@ -1,0 +1,3 @@
+10.10.10.1 dev eth0 lladdr 02:42:ac:11:00:01 REACHABLE
+172.16.50.20 dev eth1 lladdr 02:42:ac:11:00:20 STALE
+172.16.50.31 dev eth1 FAILED

@@ -1,0 +1,29 @@
+[Unit]
+Description=CTF Workspace restricted network namespace helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=ctfws
+WorkingDirectory=/var/lib/ctfws
+ExecStart=/opt/ctfws/.venv/bin/ctfws-namespace-helper --workspace /var/lib/ctfws/workspace --socket /run/ctfws/namespace-helper.sock
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=ctfws
+RuntimeDirectoryMode=0750
+UMask=0007
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/ctfws /run/ctfws /run/netns
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

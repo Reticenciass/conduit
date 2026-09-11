@@ -1,0 +1,25 @@
+[Unit]
+Description=Conduit Linux motor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ctfws
+Group=ctfws
+WorkingDirectory=/var/lib/ctfws
+Environment=CTFWS_AUTH_REQUIRED=1
+Environment=CTFWS_NAMESPACE_SOCKET=/run/ctfws/namespace-helper.sock
+EnvironmentFile=-/etc/ctfws/ctfws.env
+ExecStart=/opt/ctfws/.venv/bin/conduit --workspace /var/lib/ctfws/workspace start --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ctfws /etc/ctfws
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

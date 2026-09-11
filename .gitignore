@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+._validation/
+/build/
+/dist/
+
+# Frontend dependencies and TypeScript build metadata.
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/.vite/
+
+# Runtime data belongs to a lab workspace, not the source tree.
+workspace.db
+logs/
+evidence/
+loot/
+reports/

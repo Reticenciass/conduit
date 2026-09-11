@@ -1,0 +1,4 @@
+127.0.0.1 localhost
+10.10.10.20 web01 web01.lab
+172.16.50.20 db.internal mysql.internal
+# ignored comment

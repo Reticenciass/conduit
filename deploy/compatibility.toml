@@ -1,0 +1,37 @@
+# Manifesto de compatibilidade do motor. Versões desconhecidas não são aceitas
+# automaticamente para recursos avançados; valide-as no laboratório autorizado.
+
+[ctfws]
+version = "0.28.0"
+schema = 33
+
+[openssh]
+minimum_major = 8
+tested_capabilities = ["local-forward", "remote-forward", "dynamic-socks", "pty"]
+
+[asyncssh]
+minimum = "2.19"
+role = "transport-reutilizavel"
+
+[chisel]
+version = "operator-selected"
+tested_capabilities = ["tcp-forward", "dynamic-socks"]
+requires_explicit_review = true
+
+[ligolo_ng]
+contract = "ctfws-routed-context-v1"
+version = "operator-selected"
+tested_capabilities = ["control-channel", "routed-context"]
+enabled_by_default = false
+requires_manifest_match = true
+requires_privileged_helper = true
+
+[gsocket]
+version = "operator-selected"
+tested_capabilities = ["single-tcp-flow"]
+optional = true
+
+[netcat]
+version = "operator-selected"
+tested_capabilities = ["single-tcp-flow"]
+requires_explicit_review = true
