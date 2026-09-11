@@ -20,7 +20,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectControlGroups=true
-ReadWritePaths=/var/lib/ctfws /run/ctfws /run/netns
+ReadWritePaths=/var/lib/ctfws /var/lib/ctfws/workspace /run/ctfws /run/netns
 # iproute2 and Ligolo's TUN setup use netlink; keep the family allowlist
 # explicit instead of disabling the sandbox entirely.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
