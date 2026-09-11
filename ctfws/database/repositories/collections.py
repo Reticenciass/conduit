@@ -89,7 +89,7 @@ class CollectionRepository:
         params.append(max(1, min(limit, 200)))
         with self.database.connection() as connection:
             rows = connection.execute(query, params).fetchall()
-        return [self._to_model(row) for row in rows]
+        return [self._hydrate_outputs(self._to_model(row)) for row in rows]
 
     def get(self, run_id: int) -> CollectionRunRead | None:
         """Return one collection belonging to this workspace only."""
@@ -99,7 +99,54 @@ class CollectionRepository:
                 "SELECT * FROM collection_runs WHERE lab_id = ? AND id = ?",
                 (self.lab_id, run_id),
             ).fetchone()
-        return self._to_model(row) if row else None
+        return self._hydrate_outputs(self._to_model(row)) if row else None
+
+    def _hydrate_outputs(self, collection: CollectionRunRead) -> CollectionRunRead:
+        """Expose command history for collections written before raw outputs were embedded."""
+
+        result = dict(collection.result)
+        if "outputs" in result or collection.snapshot_id is None:
+            return collection
+
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT command, output FROM commands "
+                "WHERE lab_id = ? AND snapshot_id = ? ORDER BY id",
+                (self.lab_id, collection.snapshot_id),
+            ).fetchall()
+
+        if not rows:
+            return collection
+
+        outputs: dict[str, str] = {}
+        raw_steps = result.get("steps")
+        steps = dict(raw_steps) if isinstance(raw_steps, dict) else {}
+        for row in rows:
+            command = str(row["command"])
+            output = str(row["output"])
+            key = self._output_key(command)
+            outputs[key] = output
+            previous = steps.get(key)
+            detail = dict(previous) if isinstance(previous, dict) else {}
+            detail.setdefault("status", "succeeded")
+            detail.setdefault("command", command)
+            detail.setdefault("bytes", len(output.encode("utf-8")))
+            steps[key] = detail
+
+        result["outputs"] = outputs
+        result["steps"] = steps
+        return collection.model_copy(update={"result": result})
+
+    @staticmethod
+    def _output_key(command: str) -> str:
+        return {
+            "ip addr": "ip_addr",
+            "ip route": "ip_route",
+            "ip neigh": "ip_neigh",
+            "ss -tunap": "ss",
+            "cat /etc/hosts": "hosts",
+            "cat /etc/resolv.conf": "resolv",
+        }.get(command, command)
 
     @staticmethod
     def _to_model(row: sqlite3.Row) -> CollectionRunRead:

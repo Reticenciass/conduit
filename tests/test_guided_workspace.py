@@ -1314,6 +1314,20 @@ def test_remote_inspection_imports_fixed_read_only_outputs(workspace, monkeypatc
     assert response.status_code == 200
     assert response.json()["result"]["outputs"]["ip_addr"] == outputs[("ip", "addr")]
 
+    # Compatibility: older collection rows only stored summary metadata while
+    # their raw command rows still carried the snapshot foreign key.
+    legacy_result = dict(collection.result)
+    legacy_result.pop("outputs", None)
+    workspace.collections.update(
+        collection.id,
+        status=collection.status,
+        completed_steps=collection.completed_steps,
+        result=legacy_result,
+    )
+    hydrated = workspace.collections.get(collection.id)
+    assert hydrated is not None
+    assert hydrated.result["outputs"]["ip_addr"] == outputs[("ip", "addr")]
+
 
 def test_remote_inspection_resolves_profile_hostname_without_using_name_as_identity(
     workspace, monkeypatch
