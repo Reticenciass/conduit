@@ -52,7 +52,7 @@ curl "${curl_options[@]}" "${archive_url}" --output "${archive}"
 install -d -m 0750 "${extract_dir}"
 tar -xzf "${archive}" -C "${extract_dir}"
 source_dir="$(find "${extract_dir}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-if [[ -z "${source_dir}" || ! -x "${source_dir}/deploy/install-linux.sh" ]]; then
+if [[ -z "${source_dir}" || ! -f "${source_dir}/deploy/install-linux.sh" ]]; then
   echo "Downloaded archive does not contain deploy/install-linux.sh." >&2
   exit 1
 fi
