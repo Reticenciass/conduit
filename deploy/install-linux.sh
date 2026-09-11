@@ -149,6 +149,13 @@ install_user_launchers
 chown -R ctfws:ctfws /opt/ctfws /var/lib/ctfws
 chmod 0755 /opt/ctfws /opt/ctfws/releases
 chmod 0750 /var/lib/ctfws /etc/ctfws
+# Existing workspaces may predate the routed runtime. The motor and its
+# separately privileged helper share these two group-writable directories;
+# database, notes and evidence remain owned by the motor as before.
+install -d -m 0770 -o ctfws -g ctfws \
+  /var/lib/ctfws/workspace/runtime \
+  /var/lib/ctfws/workspace/runtime/contexts \
+  /var/lib/ctfws/workspace/logs
 
 # The proxy is executed as the restricted ctfws account inside a private
 # network namespace. CAP_NET_ADMIN is therefore attached to this managed

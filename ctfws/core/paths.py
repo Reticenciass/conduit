@@ -39,7 +39,23 @@ class WorkspacePaths:
 
         self.root.mkdir(parents=True, exist_ok=True)
         for directory in WORKSPACE_DIRS:
-            (self.root / directory).mkdir(exist_ok=True)
+            path = self.root / directory
+            path.mkdir(exist_ok=True)
+            if directory == "logs":
+                # The optional root helper writes managed proxy logs through
+                # the ctfws group, while the motor remains the owner.
+                try:
+                    path.chmod(0o770)
+                except OSError:
+                    pass
+        runtime = self.root / "runtime"
+        runtime.mkdir(exist_ok=True)
+        (runtime / "contexts").mkdir(exist_ok=True)
+        for path in (runtime, runtime / "contexts"):
+            try:
+                path.chmod(0o770)
+            except OSError:
+                pass
 
     @classmethod
     def from_value(cls, value: Path | None) -> WorkspacePaths:
