@@ -183,8 +183,14 @@ def _resolve_start_workspace(value: Path | None) -> WorkspacePaths:
     if os.name != "nt":
         known_paths.append(Path("/var/lib/ctfws/workspace"))
     for candidate in known_paths:
-        if (candidate / "workspace.db").is_file():
-            candidates.append(candidate.resolve())
+        try:
+            if (candidate / "workspace.db").is_file():
+                candidates.append(candidate.resolve())
+        except OSError:
+            # A systemd workspace can intentionally be readable only by the
+            # dedicated motor account.  It must not make the one-command
+            # launcher fail with a raw PermissionError while probing paths.
+            continue
 
     for base_dir in (Path.home() / "ctf", Path.home() / "conduit"):
         candidates.extend(item.root for item in discover_labs(base_dir))
@@ -231,6 +237,16 @@ def _handle_error(error: Exception) -> None:
     if isinstance(error, ValueError):
         console.print(f"[red]Entrada inválida:[/red] {error}")
         raise typer.Exit(code=2)
+    if isinstance(error, PermissionError):
+        console.print(
+            "[red]Acesso negado:[/red] não foi possível ler o workspace. "
+            "Execute este diagnóstico com 'sudo' ou use um workspace acessível "
+            "ao usuário atual."
+        )
+        raise typer.Exit(code=1)
+    if isinstance(error, OSError):
+        console.print(f"[red]Falha local:[/red] não foi possível acessar o recurso: {error}")
+        raise typer.Exit(code=1)
     raise error
 
 
