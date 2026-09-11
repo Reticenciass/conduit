@@ -206,6 +206,7 @@ class RoutedNamespaceHelper:
                     "CAP_NET_ADMIN",
                     "CAP_SETGID",
                     "CAP_SETUID",
+                    "CAP_KILL",
                     "setcap",
                 ],
                 "network": str(self._RUNTIME_ADDRESS_NETWORK),
