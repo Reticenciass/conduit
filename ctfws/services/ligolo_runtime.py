@@ -99,7 +99,10 @@ class LigoloAPIClient:
             if body is not None:
                 headers["Content-Type"] = "application/json"
             if auth and token:
-                headers["Authorization"] = f"Bearer {token}"
+                # Ligolo-ng 0.9.1 parses the Authorization header directly as
+                # the JWT; unlike Conduit HTTP endpoints it does not accept a
+                # ``Bearer `` prefix here.
+                headers["Authorization"] = token
             connection = http.client.HTTPConnection(self.host, self.port, timeout=3)
             try:
                 connection.request(method, path, body=body, headers=headers)
