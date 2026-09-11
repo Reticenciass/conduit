@@ -69,7 +69,11 @@ enviados para o chat ou colocados em comandos e logs.
    controle de entrada: o operador que já detém o controle continua sendo o único a escrever.
 4. Clique em **Inspecionar**. A tarefa retorna `202`, progride em `/api/v2/.../jobs` e registra
    snapshots, comandos, proveniência e resultados parciais. Um timeout não remove uma observação
-   anterior.
+   anterior. Abra **Atividade** para acompanhar a atualização automática; cada job de inspeção
+   pode ser expandido para consultar as etapas, o comando fixo, o tamanho, os erros e a saída
+   bruta de cada coleta. O histórico também fica disponível em `/api/v1/collections` ou em
+   `/api/v1/collections/{collection_id}` (e nos equivalentes v2), sempre limitado ao workspace.
+   Se a inspeção falhar depois de iniciar, a coleta parcial continua consultável e não é apagada.
 5. O mapa apresenta candidatos e caminhos prontos. Para um serviço, escolha **Tunnelar**. O
    sistema mostra conexão, destino, porta local, dependências e comando antes de criar o plano.
    A porta `0` pede uma porta efêmera ao sistema; o motor mantém o socket reservado durante a

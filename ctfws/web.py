@@ -1024,6 +1024,17 @@ def create_app(paths: WorkspacePaths) -> Any:
         require_workspace(workspace_id)
         return [run.model_dump(mode="json") for run in workspace.collections.list(host_id, limit)]
 
+    @app.get("/api/v1/collections/{collection_id}")
+    @app.get("/api/v2/workspaces/{workspace_id}/collections/{collection_id}")
+    def collection_get(collection_id: int, workspace_id: int | None = None) -> dict[str, Any]:
+        """Return one inspection run, including its persisted command outputs."""
+
+        require_workspace(workspace_id)
+        run = workspace.collections.get(collection_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Coleta não encontrada neste workspace.")
+        return run.model_dump(mode="json")
+
     @app.post("/api/v1/jobs/{job_id}/cancel")
     @app.post("/api/v2/jobs/{job_id}/cancel")
     @app.post("/api/v2/workspaces/{workspace_id}/jobs/{job_id}/cancel")
@@ -1623,8 +1634,17 @@ def create_app(paths: WorkspacePaths) -> Any:
         after_sequence = int(raw_sequence) if raw_sequence.isdigit() else 0
         read_only = websocket.query_params.get("readonly", "0") == "1"
         viewer_token = terminals.subscribe(terminal_id, after_sequence=after_sequence)
+        has_control = False
         if role != "observer" and not read_only:
-            terminals.acquire_control(terminal_id, viewer_token)
+            has_control = terminals.acquire_control(terminal_id, viewer_token)
+        if workspace_id is not None:
+            await websocket.send_json(
+                {
+                    "type": "ready",
+                    "control": has_control,
+                    "readonly": read_only or role == "observer",
+                }
+            )
         receive_task: asyncio.Task[Any] | None = None
         output_task: asyncio.Task[Any] | None = None
         try:
@@ -1667,6 +1687,8 @@ def create_app(paths: WorkspacePaths) -> Any:
                         if text.startswith("{"):
                             try:
                                 payload = json.loads(text)
+                                if not isinstance(payload, dict):
+                                    raise ValueError("Mensagem de terminal inválida.")
                                 if payload.get("action") == "resize":
                                     terminals.resize(
                                         terminal_id,
@@ -1684,17 +1706,40 @@ def create_app(paths: WorkspacePaths) -> Any:
                                         await websocket.send_json(
                                             {"type": "error", "code": "control_held"}
                                         )
+                                    else:
+                                        await websocket.send_json(
+                                            {"type": "control", "granted": True}
+                                        )
                                     text = ""
                                 else:
                                     text = str(payload.get("data", ""))
                             except json.JSONDecodeError:
+                                # A malformed JSON-looking payload is treated as
+                                # terminal input, preserving normal shell behavior.
                                 pass
+                            except (TypeError, ValueError, RuntimeError, OSError) as error:
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "code": "terminal_operation_failed",
+                                        "message": str(error)[:500],
+                                    }
+                                )
+                                text = ""
                         raw = text.encode("utf-8")
                     if raw and role != "observer" and not read_only:
                         try:
-                            terminals.write(terminal_id, raw, owner=viewer_token)
+                            await terminals.write_async(terminal_id, raw, owner=viewer_token)
                         except PermissionError:
                             await websocket.send_json({"type": "error", "code": "control_held"})
+                        except Exception as error:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": "terminal_input_failed",
+                                    "message": str(error)[:500],
+                                }
+                            )
                     receive_task = asyncio.create_task(websocket.receive())
                 if output_task in done:
                     frame = output_task.result()
@@ -1721,7 +1766,7 @@ def create_app(paths: WorkspacePaths) -> Any:
                             terminals.read_subscriber_frame, terminal_id, viewer_token, 0.25
                         )
                     )
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError, OSError, ValueError):
             return
         finally:
             try:
@@ -1820,6 +1865,7 @@ def _inspect_task(
         "completed_steps": result.completed_steps,
         "failed_steps": list(result.failed_steps),
         "snapshot_id": result.snapshot_id,
+        "collection_id": result.collection_id,
     }
 
 
@@ -1849,6 +1895,7 @@ async def _inspect_async_task(
         "completed_steps": result.completed_steps,
         "failed_steps": list(result.failed_steps),
         "snapshot_id": result.snapshot_id,
+        "collection_id": result.collection_id,
     }
 
 

@@ -446,9 +446,13 @@ def test_asyncssh_remote_terminal_uses_shared_pty_and_sequence(workspace, monkey
     class FakeWriter:
         def __init__(self) -> None:
             self.data: list[bytes] = []
+            self.drained = False
 
         def write(self, data: bytes) -> None:
             self.data.append(data)
+
+        async def drain(self) -> None:
+            self.drained = True
 
     class FakeProcess:
         def __init__(self) -> None:
@@ -497,17 +501,23 @@ def test_asyncssh_remote_terminal_uses_shared_pty_and_sequence(workspace, monkey
         )
         token = terminals.subscribe(terminal.id)
         terminals.acquire_control(terminal.id, token)
-        terminals.write(terminal.id, b"id\n", owner=token)
+        await terminals.write_async(terminal.id, b"id\n", owner=token)
         terminals.resize(terminal.id, 120, 40)
         frame = await asyncio.to_thread(terminals.read_subscriber_frame, terminal.id, token, 1)
         assert frame is not None
         assert frame.sequence == 1
         assert frame.data == b"remote-output\r\n"
+        resumed = terminals.subscribe(terminal.id, after_sequence=frame.sequence)
+        assert (
+            await asyncio.to_thread(terminals.read_subscriber_frame, terminal.id, resumed, 0.05)
+            is None
+        )
         await asyncio.sleep(0)
 
     asyncio.run(exercise())
     assert calls == [{"term_type": "xterm", "term_size": (80, 24), "encoding": None}]
     assert process.stdin.data == [b"id\n"]
+    assert process.stdin.drained is True
     assert process.sizes == [(120, 40)]
     current = workspace.terminals.get(1)
     assert current is not None
@@ -1289,7 +1299,20 @@ def test_remote_inspection_imports_fixed_read_only_outputs(workspace, monkeypatc
     assert result.host_name == "jump"
     assert result.networks >= 1
     assert result.snapshot_id is not None
-    assert workspace.collections.list(profile.host_id)[0].snapshot_id == result.snapshot_id
+    collection = workspace.collections.list(profile.host_id)[0]
+    assert collection.snapshot_id == result.snapshot_id
+    assert collection.result["outputs"]["ip_addr"] == outputs[("ip", "addr")]
+    assert collection.result["steps"]["ip_addr"]["command"] == "ip addr"
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ctfws.web import create_app
+
+    with TestClient(create_app(workspace.paths)) as client:
+        response = client.get(f"/api/v1/collections/{collection.id}")
+    assert response.status_code == 200
+    assert response.json()["result"]["outputs"]["ip_addr"] == outputs[("ip", "addr")]
 
 
 def test_remote_inspection_resolves_profile_hostname_without_using_name_as_identity(

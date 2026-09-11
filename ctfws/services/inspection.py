@@ -36,6 +36,7 @@ class InspectionResult:
     completed_steps: int = 0
     failed_steps: tuple[str, ...] = ()
     snapshot_id: int | None = None
+    collection_id: int | None = None
 
 
 class RemoteInspectionService:
@@ -72,15 +73,23 @@ class RemoteInspectionService:
         for completed_steps, (name, args) in enumerate(self.COMMANDS.items(), start=1):
             try:
                 outputs[name] = self._run(profile, args)
-                step_details[name] = {"status": "succeeded", "bytes": len(outputs[name])}
-            except RuntimeError as error:
+                step_details[name] = {
+                    "status": "succeeded",
+                    "command": shlex.join(args),
+                    "bytes": len(outputs[name].encode("utf-8")),
+                }
+            except Exception as error:
                 failed_steps.append(name)
-                step_details[name] = {"status": "failed", "error": str(error)[:500]}
+                step_details[name] = {
+                    "status": "failed",
+                    "command": shlex.join(args),
+                    "error": str(error)[:500],
+                }
             self.workspace.collections.update(
                 collection.id,
                 status=CollectionStatus.RUNNING,
                 completed_steps=completed_steps,
-                result={"steps": step_details},
+                result={"steps": step_details, "outputs": outputs},
             )
             if progress is not None:
                 progress(completed_steps, name)
@@ -105,15 +114,23 @@ class RemoteInspectionService:
         for completed_steps, (name, args) in enumerate(self.COMMANDS.items(), start=1):
             try:
                 outputs[name] = await self._run_async(manager, profile, args)
-                step_details[name] = {"status": "succeeded", "bytes": len(outputs[name])}
-            except RuntimeError as error:
+                step_details[name] = {
+                    "status": "succeeded",
+                    "command": shlex.join(args),
+                    "bytes": len(outputs[name].encode("utf-8")),
+                }
+            except Exception as error:
                 failed_steps.append(name)
-                step_details[name] = {"status": "failed", "error": str(error)[:500]}
+                step_details[name] = {
+                    "status": "failed",
+                    "command": shlex.join(args),
+                    "error": str(error)[:500],
+                }
             self.workspace.collections.update(
                 collection.id,
                 status=CollectionStatus.RUNNING,
                 completed_steps=completed_steps,
-                result={"steps": step_details},
+                result={"steps": step_details, "outputs": outputs},
             )
             if progress is not None:
                 progress(completed_steps, name)
@@ -181,6 +198,12 @@ class RemoteInspectionService:
             except Exception:
                 if name not in failed_steps:
                     failed_steps.append(name)
+                details = step_details.get(name, {})
+                step_details[name] = {
+                    **details,
+                    "status": "failed",
+                    "error": "A saída foi coletada, mas não pôde ser normalizada.",
+                }
                 continue
             if name == "ss":
                 sockets = result
@@ -198,6 +221,8 @@ class RemoteInspectionService:
                 "steps": step_details,
                 "failed_steps": failed_steps,
                 "snapshot_id": snapshot.id,
+                "collection_id": collection.id,
+                "outputs": outputs,
                 "networks": len(self._networks_for_host(host.id)),
                 "services": services,
                 "connections": connections,
@@ -212,6 +237,7 @@ class RemoteInspectionService:
             len(outputs),
             tuple(failed_steps),
             snapshot.id,
+            collection.id,
         )
 
     def _ensure_host(self, profile: ConnectionProfileRead) -> HostRead:

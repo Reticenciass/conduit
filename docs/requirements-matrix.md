@@ -10,8 +10,8 @@ da instalação atual.
 | B — tarefas, idempotência e migrações 13→33 | implementado | `TaskRepository`, transição+evento na mesma transação, migração incremental 13→33, backup antes de migration |
 | B — AsyncSSH reutilizável | parcial | `AsyncSSHConnectionManager` mantém geração/capacidades e reutiliza conexões; terminais, inspeção, SFTP e forwards SSH do dashboard usam o canal compartilhado; parser seguro preserva `ProxyJump` tipado e categoriza falhas; CLI e adapters não-SSH mantêm fallback/processo |
 | C — React, TypeScript, Vite e xterm.js | implementado | `frontend/`, build incluído em `ctfws/frontend/dist`; abas, rename, busca e divisão somente leitura |
-| C — PTY Linux, resize, controle e buffer limitado | implementado | `TerminalManager`, backpressure, histórico sequenciado, cursor de retomada e compartilhamento explícito no WebSocket v2 |
-| D — coleta parcial, proveniência e histórico | implementado | `RemoteInspectionService`, `collection_runs`, snapshots |
+| C — PTY Linux, resize, controle e buffer limitado | implementado | `TerminalManager`, backpressure, fila de entrada no xterm, histórico sequenciado, cursor de retomada e compartilhamento explícito no WebSocket v2 |
+| D — coleta parcial, proveniência e histórico | implementado | `RemoteInspectionService`, `collection_runs`, snapshots, saída bruta consultável na Atividade e API de coleta individual |
 | D — prova de caminho com validade | implementado | `access_path_checks`, `path verify`, TTL de 5 min |
 | E — arquivos atômicos, limite e hashes | implementado | `SFTPTransferService`, upload web, streaming AsyncSSH/SFTP, limite configurável (`CTFWS_MAX_FILE_BYTES`), verificação remota, política de conflito explícita e tabela `transfers` |
 | E — catálogo de ferramentas e evidência vinculada | implementado | `ToolCatalogService`, tabela `tool_catalog`, hash sem execução, UI e job de transferência explícita |

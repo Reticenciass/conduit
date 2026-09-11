@@ -175,6 +175,12 @@ In the web interface:
 Conduit always shows where an action will run: on the remote machine, on Kali, or inside a
 routed network context.
 
+Inspection results are not hidden in the background: open **Activity** to watch the job update,
+expand the inspection, and read each collected command output. The same output is preserved in
+the collection history and can be retrieved through `GET /api/v1/collections/{id}` (or the
+workspace-scoped v2 equivalent). If a collection is partial, completed steps and their output
+remain available alongside the failure details.
+
 ## Core concepts
 
 | Concept | Purpose |

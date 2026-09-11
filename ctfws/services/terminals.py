@@ -264,6 +264,21 @@ class TerminalManager:
         runtime.process.stdin.write(data)
         runtime.process.stdin.flush()
 
+    async def write_async(self, terminal_id: int, data: bytes, owner: str | None = None) -> None:
+        """Write input and honor AsyncSSH flow control when a remote PTY is used."""
+
+        self.write(terminal_id, data, owner=owner)
+        runtime = self._runtime(terminal_id)
+        if runtime.remote_process is None:
+            return
+        writer = getattr(runtime.remote_process, "stdin", None)
+        drain = getattr(writer, "drain", None)
+        if drain is None:
+            return
+        result = drain()
+        if hasattr(result, "__await__"):
+            await result
+
     def read(self, terminal_id: int, timeout: float = 0.1) -> bytes | None:
         runtime = self._runtime(terminal_id)
         return self._read_queue(runtime.output, timeout)
@@ -276,9 +291,12 @@ class TerminalManager:
         subscriber: queue.Queue[TerminalFrame] = queue.Queue(maxsize=512)
         with self._lock:
             runtime.subscribers[token] = subscriber
-            first_sequence = runtime.history[0][0] if runtime.history else runtime.sequence + 1
+            pending_history = [
+                (sequence, data) for sequence, data in runtime.history if sequence > after_sequence
+            ]
+            first_sequence = pending_history[0][0] if pending_history else runtime.sequence + 1
             gap = after_sequence > 0 and first_sequence > after_sequence + 1
-            for sequence, data in runtime.history:
+            for sequence, data in pending_history:
                 try:
                     subscriber.put_nowait(
                         TerminalFrame(sequence, data, gap=gap and sequence == first_sequence)

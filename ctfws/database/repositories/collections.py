@@ -91,6 +91,16 @@ class CollectionRepository:
             rows = connection.execute(query, params).fetchall()
         return [self._to_model(row) for row in rows]
 
+    def get(self, run_id: int) -> CollectionRunRead | None:
+        """Return one collection belonging to this workspace only."""
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM collection_runs WHERE lab_id = ? AND id = ?",
+                (self.lab_id, run_id),
+            ).fetchone()
+        return self._to_model(row) if row else None
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> CollectionRunRead:
         raw = dict(row)

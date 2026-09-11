@@ -197,6 +197,7 @@ function App() {
     try {
       const job = await request<Json>(`/connections/${connectionId}/inspect`, { method: "POST" });
       setNotice(`Inspeção iniciada como tarefa #${String(job.job_id)}.`);
+      window.dispatchEvent(new Event("ctfws:activity-refresh"));
       setView("activity");
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   };
@@ -296,6 +297,7 @@ function App() {
       }
       const job = await request<Json>(`/connections/${connectionId}/inspect`, { method: "POST" });
       setNotice(`Conectado. Inspeção iniciada como tarefa #${String(job.job_id)}.`);
+      window.dispatchEvent(new Event("ctfws:activity-refresh"));
       setView("activity");
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   }
@@ -630,22 +632,45 @@ function Tools({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
 function Activity() {
   const [jobs, setJobs] = useState<Json[]>([]);
   const [audit, setAudit] = useState<Json[]>([]);
+  const [collections, setCollections] = useState<Json[]>([]);
   const [resumePlan, setResumePlan] = useState<Json[]>([]);
   const [selectedResume, setSelectedResume] = useState<string[]>([]);
   const [resumeMessage, setResumeMessage] = useState("");
-  const load = () => {
-    void Promise.all([request<Json[]>("/jobs"), request<Json[]>("/audit"), request<Json[]>("/resume")])
-      .then(([nextJobs, nextAudit, nextResume]) => {
-        setJobs(nextJobs);
-        setAudit(nextAudit);
-        setResumePlan(nextResume);
-        setSelectedResume(nextResume.map(item => String(item.resource_ref ?? "")));
-      })
-      .catch(() => { setJobs([]); setAudit([]); setResumePlan([]); });
-  };
-  useEffect(() => {
-    load();
+  const resumeInitialized = useRef(false);
+  const load = useCallback(async () => {
+    try {
+      const [nextJobs, nextAudit, nextResume, nextCollections] = await Promise.all([
+        request<Json[]>("/jobs"),
+        request<Json[]>("/audit"),
+        request<Json[]>("/resume"),
+        request<Json[]>("/collections?limit=30"),
+      ]);
+      setJobs(nextJobs);
+      setAudit(nextAudit);
+      setCollections(nextCollections);
+      setResumePlan(nextResume);
+      const references = nextResume.map(item => String(item.resource_ref ?? ""));
+      setSelectedResume(current => {
+        if (!resumeInitialized.current) {
+          resumeInitialized.current = true;
+          return references;
+        }
+        return current.filter(reference => references.includes(reference));
+      });
+    } catch {
+      setJobs([]); setAudit([]); setCollections([]); setResumePlan([]);
+    }
   }, []);
+  useEffect(() => {
+    void load();
+    const refreshActivity = () => void load();
+    window.addEventListener("ctfws:activity-refresh", refreshActivity);
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => {
+      window.removeEventListener("ctfws:activity-refresh", refreshActivity);
+      window.clearInterval(timer);
+    };
+  }, [load]);
   const applyResume = async () => {
     try {
       const result = await request<Json[]>("/resume", {
@@ -654,11 +679,23 @@ function Activity() {
         body: JSON.stringify({ resource_refs: selectedResume }),
       });
       setResumeMessage(`${result.length} recurso(s) processado(s). Nenhum comando foi repetido automaticamente.`);
-      load();
+      void load();
     } catch (error) { setResumeMessage(error instanceof Error ? error.message : String(error)); }
   };
   const toggleResume = (reference: string) => setSelectedResume(current => current.includes(reference) ? current.filter(item => item !== reference) : [...current, reference]);
-  return <div className="content-grid"><section className="panel span-two"><PanelHeader title="Retomar ambiente" subtitle="A retomada exige uma escolha explícita e não reenvia comandos de terminal" />{resumePlan.length ? <><div className="resume-list">{resumePlan.map(item => { const reference = String(item.resource_ref ?? ""); return <label className="resume-item" key={reference}><input type="checkbox" checked={selectedResume.includes(reference)} onChange={() => toggleResume(reference)} /><span><strong>{String(item.name)}</strong><small>{reference} · {String(item.action)} · {String(item.reason)}</small></span></label>; })}</div><div className="panel-actions"><button className="button primary" disabled={!selectedResume.length} onClick={() => void applyResume()}>Retomar selecionados</button>{resumeMessage && <span className="notice-message inline-notice">{resumeMessage}</span>}</div></> : <Empty text="Nenhum recurso precisa de retomada" />}</section><section className="panel span-two"><PanelHeader title="Jobs" subtitle="Tarefas persistidas pelo motor" />{jobs.length ? jobs.map(job => <div className="list-row" key={String(job.id)}><div className="row-icon">◷</div><div className="row-main"><strong>{String(job.kind)}</strong><small>Tarefa #{String(job.id)} · {String(job.current_step ?? "aguardando")}</small></div><span className={`state ${String(job.status)}`}>{String(job.status)} · {String(job.progress)}%</span></div>) : <Empty text="Nenhuma tarefa recente" />}</section><section className="panel span-two"><PanelHeader title="Auditoria" subtitle="Quem solicitou cada mutação e qual foi o resultado" />{audit.length ? audit.slice(0, 30).map(item => <div className="list-row" key={String(item.id)}><div className="row-icon">◉</div><div className="row-main"><strong>{String(item.action)}</strong><small>{String(item.actor)} · {String(item.resource_type)} · {String(item.created_at)}</small></div><span className={`state ${String(item.result)}`}>{String(item.result)}</span></div>) : <Empty text="Nenhum evento de auditoria" />}</section></div>;
+  return <div className="content-grid"><section className="panel span-two"><PanelHeader title="Retomar ambiente" subtitle="A retomada exige uma escolha explícita e não reenvia comandos de terminal" />{resumePlan.length ? <><div className="resume-list">{resumePlan.map(item => { const reference = String(item.resource_ref ?? ""); return <label className="resume-item" key={reference}><input type="checkbox" checked={selectedResume.includes(reference)} onChange={() => toggleResume(reference)} /><span><strong>{String(item.name)}</strong><small>{reference} · {String(item.action)} · {String(item.reason)}</small></span></label>; })}</div><div className="panel-actions"><button className="button primary" disabled={!selectedResume.length} onClick={() => void applyResume()}>Retomar selecionados</button>{resumeMessage && <span className="notice-message inline-notice">{resumeMessage}</span>}</div></> : <Empty text="Nenhum recurso precisa de retomada" />}</section><section className="panel span-two"><PanelHeader title="Jobs" subtitle="O motor atualiza o andamento automaticamente; abra uma tarefa para ver o resultado." />{jobs.length ? jobs.map(job => { const result = asRecord(job.result); const collectionId = Number(result.collection_id ?? 0); const collection = collections.find(item => Number(item.id) === collectionId); return <div className="job-card" key={String(job.id)}><div className="list-row"><div className="row-icon">◷</div><div className="row-main"><strong>{String(job.kind)}</strong><small>Tarefa #{String(job.id)} · {String(job.current_step ?? "aguardando")}</small></div><span className={`state ${String(job.status)}`}>{String(job.status)} · {String(job.progress)}%</span></div>{typeof job.error_message === "string" && <div className="error-message job-error">{String(job.error_code ?? "erro")}: {String(job.error_message)}</div>}{collection && <InspectionDetails collection={collection} />}{!collection && Object.keys(result).length > 0 && <details className="job-details"><summary>Ver resultado da tarefa</summary><pre className="inspection-output">{JSON.stringify(result, null, 2)}</pre></details>}</div>; }) : <Empty text="Nenhuma tarefa recente" />}</section><section className="panel span-two"><PanelHeader title="Histórico de inspeções" subtitle="Saídas brutas, etapas e snapshot ficam preservados por coleta." />{collections.length ? collections.slice(0, 12).map(collection => <InspectionDetails collection={collection} key={String(collection.id)} />) : <Empty text="Nenhuma inspeção registrada" />}</section><section className="panel span-two"><PanelHeader title="Auditoria" subtitle="Quem solicitou cada mutação e qual foi o resultado" />{audit.length ? audit.slice(0, 30).map(item => <div className="list-row" key={String(item.id)}><div className="row-icon">◉</div><div className="row-main"><strong>{String(item.action)}</strong><small>{String(item.actor)} · {String(item.resource_type)} · {String(item.created_at)}</small></div><span className={`state ${String(item.result)}`}>{String(item.result)}</span></div>) : <Empty text="Nenhum evento de auditoria" />}</section></div>;
+}
+
+function asRecord(value: unknown): Json {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+}
+
+function InspectionDetails({ collection }: { collection: Json }) {
+  const result = asRecord(collection.result);
+  const steps = asRecord(result.steps);
+  const outputs = asRecord(result.outputs);
+  const failedSteps = Array.isArray(result.failed_steps) ? result.failed_steps.map(String) : [];
+  return <details className="job-details"><summary>Coleta #{String(collection.id)} · {String(collection.status)} · {String(collection.updated_at)}</summary><div className="inspection-summary"><span>Host <strong>{String(result.host_name ?? collection.host_id ?? "não identificado")}</strong></span><span>Snapshot <strong>#{String(collection.snapshot_id ?? result.snapshot_id ?? "—")}</strong></span><span>Etapas <strong>{String(collection.completed_steps)}/{String(collection.total_steps)}</strong></span><span>Falhas <strong>{String(failedSteps.length)}</strong></span></div>{failedSteps.length > 0 && <div className="error-message">Etapas com falha: {failedSteps.join(", ")}</div>}<div className="inspection-steps">{Object.entries(steps).map(([name, detail]) => { const step = asRecord(detail); return <div className="inspection-step" key={name}><span className={`state ${String(step.status)}`}>{String(step.status)}</span><span><strong>{name}</strong><small>{String(step.command ?? "comando fixo")} · {String(step.bytes ?? 0)} bytes{step.error ? ` · ${String(step.error)}` : ""}</small></span></div>; })}</div>{Object.entries(outputs).map(([name, output]) => <details className="output-block" key={name}><summary>Saída: {name}</summary><pre className="inspection-output">{String(output)}</pre></details>)}</details>;
 }
 
 function HostKeyPrompt({ request, onCancel, onConfirm }: { request: HostKeyRequest; onCancel: () => void; onConfirm: () => Promise<void> }) {
@@ -846,6 +883,7 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
      terminal.loadAddon(fit);
      terminal.open(ref.current);
      fit.fit();
+     const host = ref.current;
      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
      const token = localStorage.getItem(tokenKey);
      const basePath = workspaceId
@@ -857,32 +895,98 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onC
        token ? ["ctfws", token] : undefined,
      );
      socket.binaryType = "arraybuffer";
+     const pendingInput: string[] = [];
+     let pendingInputLength = 0;
+     let disposed = false;
+     let flushTimer: number | null = null;
+     const maxPendingInput = 128 * 1024;
+     const maxSocketBuffer = 1024 * 1024;
+     const writeNotice = (message: string) => terminal.write(`\r\n\x1b[33m[Conduit] ${message}\x1b[0m\r\n`);
+     const flushInput = () => {
+       if (socket.readyState !== WebSocket.OPEN) return;
+       while (pendingInput.length && socket.bufferedAmount < maxSocketBuffer) {
+         const data = pendingInput[0];
+         if (!data) { pendingInput.shift(); continue; }
+         try { socket.send(data); }
+         catch { break; }
+         pendingInput.shift();
+         pendingInputLength -= data.length;
+       }
+       if (pendingInput.length && flushTimer === null) {
+         flushTimer = window.setTimeout(() => {
+           flushTimer = null;
+           flushInput();
+         }, 25);
+       }
+     };
+     const sendInput = (data: string) => {
+       if (socket.readyState === WebSocket.OPEN && socket.bufferedAmount < maxSocketBuffer) {
+         try { socket.send(data); } catch { pendingInput.push(data); pendingInputLength += data.length; }
+         flushInput();
+         return;
+       }
+       if (pendingInputLength + data.length > maxPendingInput) {
+         writeNotice("A conexão ainda está iniciando; entrada excedente foi descartada.");
+         return;
+       }
+       pendingInput.push(data);
+       pendingInputLength += data.length;
+     };
+     const resize = () => {
+       fit.fit();
+       if (socket.readyState === WebSocket.OPEN) {
+         try {
+           socket.send(JSON.stringify({ action: "resize", columns: terminal.cols, rows: terminal.rows }));
+         } catch { writeNotice("Não foi possível atualizar o tamanho do terminal."); }
+       }
+     };
+     socket.onopen = () => {
+       terminal.focus();
+       flushInput();
+       resize();
+     };
      socket.onmessage = event => {
        if (typeof event.data === "string") {
          try {
            const metadata = JSON.parse(event.data) as Json;
            if (typeof metadata.sequence === "number") onSequenceRef.current(metadata.sequence);
            if (metadata.gap) terminal.write("\r\n[aviso] A visualização retomou com uma lacuna de saída.\r\n");
+           if (metadata.type === "error") {
+             const code = String(metadata.code ?? "terminal_error");
+             const message = typeof metadata.message === "string" ? metadata.message :
+               code === "control_held" ? "Outro observador controla a entrada deste terminal." :
+               "A operação do terminal falhou.";
+             writeNotice(`${code}: ${message}`);
+           } else if (metadata.type === "exit") {
+             writeNotice(`O processo terminou${metadata.code !== null && metadata.code !== undefined ? ` (código ${String(metadata.code)})` : ""}.`);
+           } else if (metadata.type === "ready" && metadata.control === false && !readOnly) {
+             writeNotice("Visualização conectada sem controle de entrada.");
+           }
          } catch {
-           /* mensagens de controle não alteram o terminal */
+           writeNotice("Recebida uma mensagem inválida do motor.");
          }
          return;
        }
-       terminal.write(new Uint8Array(event.data));
+       if (event.data instanceof ArrayBuffer) terminal.write(new Uint8Array(event.data));
      };
-     if (!readOnly) terminal.onData(data => {
-       if (socket.readyState === WebSocket.OPEN) socket.send(data);
-     });
-     const resize = () => {
-       fit.fit();
-       if (socket.readyState === WebSocket.OPEN) {
-         socket.send(JSON.stringify({ action: "resize", columns: terminal.cols, rows: terminal.rows }));
-       }
+     socket.onerror = () => {
+       if (!disposed) writeNotice("Não foi possível manter a conexão do terminal.");
      };
+     socket.onclose = () => {
+       if (!disposed) writeNotice("A visualização do terminal foi desconectada.");
+     };
+     const inputSubscription = !readOnly ? terminal.onData(sendInput) : null;
+     const focus = () => terminal.focus();
+     host.addEventListener("click", focus);
      window.addEventListener("resize", resize);
      resize();
      return () => {
+       disposed = true;
        window.removeEventListener("resize", resize);
+       host.removeEventListener("click", focus);
+       inputSubscription?.dispose();
+       if (flushTimer !== null) window.clearTimeout(flushTimer);
+       pendingInput.length = 0;
        socket.close();
        terminal.dispose();
        terminalRef.current = null;
