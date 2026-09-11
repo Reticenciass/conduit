@@ -21,6 +21,10 @@ guarde-o com segurança, faça o primeiro login e crie as contas locais antes de
 acesso. Uma reinstalação preserva o arquivo de ambiente existente e não troca o código sem uma
 ação administrativa explícita.
 
+O instalador pode ser chamado a partir de um checkout no home do operador: ele instala um wheel
+na virtualenv de produção, sem deixar o serviço dependente desse diretório. Se o serviço já estiver
+ativo, ele é reiniciado para carregar o release novo.
+
 Na tela de login, cole o valor de `CTFWS_BOOTSTRAP_TOKEN` no campo **Código de bootstrap**.
 Esse acesso é um administrador inicial para provisionamento; ele não cria uma conta local
 automaticamente. Depois de entrar, abra **Configurações → Contas**, informe usuário, senha com

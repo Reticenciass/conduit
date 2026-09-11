@@ -9,7 +9,10 @@ if ! id -u ctfws >/dev/null 2>&1; then
 fi
 python3 -m venv /opt/ctfws/.venv
 /opt/ctfws/.venv/bin/python -m pip install --upgrade pip
-/opt/ctfws/.venv/bin/python -m pip install -e "${project_dir}[web]"
+# Install a wheel, not an editable checkout.  The systemd service runs as the
+# restricted ctfws user and must not depend on a clone under an operator's
+# home directory.
+/opt/ctfws/.venv/bin/python -m pip install "${project_dir}[web]"
 
 if ! /opt/ctfws/.venv/bin/python -c 'import ctfws, ctfws.reports; from ctfws.main import app; print(ctfws.__file__)'; then
   echo "Conduit foi instalado, mas o pacote não pôde ser importado." >&2
@@ -93,7 +96,11 @@ fi
 install -m 0644 "${project_dir}/deploy/ctfws.service" /etc/systemd/system/ctfws.service
 install -m 0644 "${project_dir}/deploy/ctfws-namespace-helper.service" /etc/systemd/system/ctfws-namespace-helper.service
 systemctl daemon-reload
-systemctl enable --now ctfws.service
+if systemctl is-active --quiet ctfws.service; then
+  systemctl restart ctfws.service
+else
+  systemctl enable --now ctfws.service
+fi
 if ! systemctl is-active --quiet ctfws.service; then
   echo "O serviço ctfws.service não ficou ativo; a instalação foi interrompida." >&2
   systemctl --no-pager --full status ctfws.service || true

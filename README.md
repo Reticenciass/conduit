@@ -290,6 +290,10 @@ workspace, the systemd service, and `/usr/local/bin/conduit`:
 sudo bash deploy/install-linux.sh
 ```
 
+This command is safe to run from a checkout under a user's home directory: production installs
+the package as a wheel, so the restricted service user does not depend on that checkout. If the
+service is already running, the installer restarts it so the new release is actually loaded.
+
 The installer prints the initial bootstrap code once. Store it securely and enter it in the
 **Bootstrap code** field on the first login. This creates an initial administrator session; it does
 not create a local account automatically. After login, open **Settings → Accounts**, choose a
