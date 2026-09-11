@@ -201,7 +201,13 @@ class RoutedNamespaceHelper:
             "runtime": {
                 "available": self.runtime_available,
                 "proxy_net_admin": proxy_net_admin,
-                "requires": ["CAP_SYS_ADMIN", "CAP_NET_ADMIN", "setcap"],
+                "requires": [
+                    "CAP_SYS_ADMIN",
+                    "CAP_NET_ADMIN",
+                    "CAP_SETGID",
+                    "CAP_SETUID",
+                    "setcap",
+                ],
                 "network": str(self._RUNTIME_ADDRESS_NETWORK),
             },
         }
