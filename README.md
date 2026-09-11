@@ -40,6 +40,50 @@ On Windows PowerShell, activate the virtual environment with:
 python -m pip install -e ".[web]"
 ```
 
+### One-line installer on Linux
+
+For a public copy of the repository, the standard bootstrap command is:
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/Reticenciass/conduit/main/install.sh | sudo bash
+```
+
+This repository is private, so GitHub will not serve the raw installer anonymously. Authenticate
+the request with a short-lived or read-only repository token. The following keeps the token out of
+shell history; use a token with repository Contents read access only:
+
+```bash
+read -rsp "GitHub token: " CONDUIT_GITHUB_TOKEN
+printf '\n'
+export CONDUIT_GITHUB_TOKEN
+curl -fsSL --proto '=https' --tlsv1.2 \
+  --header "Authorization: Bearer ${CONDUIT_GITHUB_TOKEN}" \
+  https://raw.githubusercontent.com/Reticenciass/conduit/main/install.sh \
+  | sudo --preserve-env=CONDUIT_GITHUB_TOKEN bash
+unset CONDUIT_GITHUB_TOKEN
+```
+
+For a sensitive environment, download the script first, review it, and then execute it. For this
+private repository, keep the authenticated environment from the previous example:
+
+```bash
+read -rsp "GitHub token: " CONDUIT_GITHUB_TOKEN
+printf '\n'
+export CONDUIT_GITHUB_TOKEN
+curl -fsSL --proto '=https' --tlsv1.2 \
+  --header "Authorization: Bearer ${CONDUIT_GITHUB_TOKEN}" \
+  https://raw.githubusercontent.com/Reticenciass/conduit/main/install.sh -o /tmp/conduit-install.sh
+less /tmp/conduit-install.sh
+sudo --preserve-env=CONDUIT_GITHUB_TOKEN CONDUIT_REF=main bash /tmp/conduit-install.sh
+unset CONDUIT_GITHUB_TOKEN
+```
+
+Replace `main` with a tag or commit SHA to pin the downloaded source. The bootstrap stores the
+selected source under `/opt/ctfws/releases/` and delegates system setup to
+`deploy/install-linux.sh`. This keeps the installed service independent of the temporary download
+directory.
+
 ### 2. Create or select a workspace
 
 ```bash
