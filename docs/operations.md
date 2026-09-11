@@ -67,6 +67,8 @@ enviados para o chat ou colocados em comandos e logs.
    Use **Compartilhar visualização** para permitir que observadores assinem o WebSocket; tornar privado
    novamente revoga novas visualizações, sem interromper o processo. Compartilhar não concede
    controle de entrada: o operador que já detém o controle continua sendo o único a escrever.
+   O extra web instala também o backend `websockets` do Uvicorn; sem ele, a página HTTP abre,
+   mas o upgrade WebSocket do terminal não funciona.
 4. Clique em **Inspecionar**. A tarefa retorna `202`, progride em `/api/v2/.../jobs` e registra
    snapshots, comandos, proveniência e resultados parciais. Um timeout não remove uma observação
    anterior. Abra **Atividade** para acompanhar a atualização automática; cada job de inspeção

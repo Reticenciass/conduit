@@ -9,7 +9,7 @@ da instalação atual.
 | A — estados verdadeiros, processos e saída final | implementado | `ForwardProcessService`, PTY/multiviewer, testes de regressão |
 | B — tarefas, idempotência e migrações 13→33 | implementado | `TaskRepository`, transição+evento na mesma transação, migração incremental 13→33, backup antes de migration |
 | B — AsyncSSH reutilizável | parcial | `AsyncSSHConnectionManager` mantém geração/capacidades e reutiliza conexões; terminais, inspeção, SFTP e forwards SSH do dashboard usam o canal compartilhado; parser seguro preserva `ProxyJump` tipado e categoriza falhas; CLI e adapters não-SSH mantêm fallback/processo |
-| C — React, TypeScript, Vite e xterm.js | implementado | `frontend/`, build incluído em `ctfws/frontend/dist`; abas, rename, busca e divisão somente leitura |
+| C — React, TypeScript, Vite e xterm.js | implementado | `frontend/`, build incluído em `ctfws/frontend/dist`; abas, rename, busca, divisão somente leitura e backend WebSocket incluído no extra web |
 | C — PTY Linux, resize, controle e buffer limitado | implementado | `TerminalManager`, backpressure, fila de entrada no xterm, histórico sequenciado, cursor de retomada e compartilhamento explícito no WebSocket v2 |
 | D — coleta parcial, proveniência e histórico | implementado | `RemoteInspectionService`, `collection_runs`, snapshots, saída bruta consultável na Atividade e API de coleta individual |
 | D — prova de caminho com validade | implementado | `access_path_checks`, `path verify`, TTL de 5 min |
