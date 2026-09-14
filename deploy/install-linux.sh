@@ -153,9 +153,12 @@ install_user_launchers
 # can read the package through its ctfws group, but cannot replace code that a
 # root service will execute. Workspace state remains writable by the motor.
 chown -R root:ctfws /opt/ctfws
-chmod -R u+rwX,g+rX,o-rwx /opt/ctfws
+# The CLI launcher is intentionally usable by the operator account as well;
+# immutability comes from root ownership and the absence of write permission,
+# not from hiding the installed Python runtime from non-service users.
+chmod -R u+rwX,g+rX,o+rX /opt/ctfws
 chown -R ctfws:ctfws /var/lib/ctfws
-chmod 0750 /opt/ctfws /opt/ctfws/releases
+chmod 0755 /opt/ctfws /opt/ctfws/releases
 chmod 0750 /var/lib/ctfws /etc/ctfws
 # Existing workspaces may predate the routed runtime. The motor and its
 # separately privileged helper share these two group-writable directories;

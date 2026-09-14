@@ -1,6 +1,6 @@
 # Conduit — revisão de falhas e plano de estabilização
 
-Data: 13 de setembro de 2026. Base inspecionada: commit `5db441a`, versão Python `0.28.0`, schema mais recente no código `34`. Rodada de correção local: versão `0.28.1`, schema `35`.
+Data: 13 de setembro de 2026. Base inspecionada: commit `5db441a`, versão Python `0.28.0`, schema mais recente no código `34`. Rodada de correção local: versão `0.28.2`, schema `35`.
 
 Este documento registra o diagnóstico, as correções aplicadas nesta rodada e o trabalho restante. A revisão usou leitura do código, testes existentes e reproduções isoladas; não executou comandos em alvos operacionais nem modificou o workspace operacional da Kali.
 
