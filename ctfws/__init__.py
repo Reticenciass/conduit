@@ -1,3 +1,3 @@
 """CTF Workspace package."""
 
-__version__ = "0.28.2"
+__version__ = "0.28.3"

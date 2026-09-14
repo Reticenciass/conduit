@@ -14,7 +14,7 @@ repository="${CONDUIT_REPOSITORY:-Reticenciass/conduit}"
 revision="${CONDUIT_REF:-main}"
 github_token="${CONDUIT_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 
-for required_command in curl tar find mktemp date install mv tr bash; do
+for required_command in curl tar find mktemp date install mv tr bash id getent groupadd useradd usermod; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     echo "Missing required command: ${required_command}" >&2
     exit 1

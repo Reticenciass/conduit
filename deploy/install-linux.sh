@@ -125,6 +125,10 @@ install_user_launchers() {
 
   local user_bin="${user_home}/.local/bin"
   install -d -m 0755 -o "${invoking_user}" -g "${user_group}" "${user_bin}"
+  # The operator needs to inspect and manage the workspace through the
+  # official CLI. Grant only the dedicated workspace group; installed code
+  # and helper artifacts remain root-owned and non-writable.
+  usermod --append --groups ctfws "${invoking_user}"
   for command_name in conduit ctfws; do
     local command_link="${user_bin}/${command_name}"
     local command_target="/opt/ctfws/.venv/bin/${command_name}"
