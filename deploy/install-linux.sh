@@ -162,8 +162,10 @@ chown -R root:ctfws /opt/ctfws
 # not from hiding the installed Python runtime from non-service users.
 chmod -R u+rwX,g+rX,o+rX /opt/ctfws
 chown -R ctfws:ctfws /var/lib/ctfws
+chmod -R u+rwX,g+rwX,o-rwx /var/lib/ctfws
 chmod 0755 /opt/ctfws /opt/ctfws/releases
 chmod 0750 /var/lib/ctfws /etc/ctfws
+chmod 0770 /var/lib/ctfws/workspace
 # Existing workspaces may predate the routed runtime. The motor and its
 # separately privileged helper share these two group-writable directories;
 # database, notes and evidence remain owned by the motor as before.

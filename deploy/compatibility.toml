@@ -2,7 +2,7 @@
 # automaticamente para recursos avançados; valide-as no laboratório autorizado.
 
 [ctfws]
-version = "0.28.3"
+version = "0.28.4"
 schema = 35
 
 [openssh]
