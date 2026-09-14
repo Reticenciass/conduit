@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
 import socket
 import sqlite3
 import stat
@@ -37,7 +38,7 @@ from ctfws.services.routed_helper import (
 )
 from ctfws.services.routed_socket import RoutedNamespaceSocketClient, RoutedNamespaceSocketServer
 from ctfws.services.tasks import TaskManager, TaskProgress
-from ctfws.services.terminals import TerminalManager
+from ctfws.services.terminals import RuntimeTerminal, TerminalFrame, TerminalManager
 from ctfws.services.vault import SecretVault
 
 
@@ -103,6 +104,46 @@ def test_task_manager_rejects_idempotency_key_with_different_content(workspace) 
             lambda _update: {"ok": False},
         )
     manager.close()
+
+
+def test_task_cancel_exposes_request_until_sync_work_reaches_boundary(workspace) -> None:
+    manager = TaskManager(workspace)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def work(_update) -> dict[str, object]:
+        entered.set()
+        while not release.wait(0.01):
+            if manager.is_cancelled(task.id):
+                break
+        return {"finished": True}
+
+    task = manager.submit(TaskCreate(kind="cancellable-fixture", total_steps=1), work)
+    assert entered.wait(2)
+    requested = manager.cancel(task.id, requested_by="operator")
+    assert requested.status == TaskStatus.RUNNING
+    assert requested.cancel_requested is True
+    assert requested.cancel_requested_by == "operator"
+    release.set()
+    deadline = time.time() + 3
+    while time.time() < deadline and manager.get(task.id).status != TaskStatus.CANCELLED:
+        time.sleep(0.02)
+    assert manager.get(task.id).status == TaskStatus.CANCELLED
+    manager.close()
+
+
+def test_slow_terminal_viewer_receives_a_gap_without_blocking_output(workspace) -> None:
+    manager = TerminalManager(workspace)
+    runtime = RuntimeTerminal(1, object())
+    output = queue.Queue(maxsize=1)
+    runtime.subscribers["viewer"] = output
+    output.put(TerminalFrame(1, b"old"))
+
+    manager._put_subscriber_with_backpressure(runtime, "viewer", output, TerminalFrame(2, b"new"))
+
+    frame = output.get_nowait()
+    assert frame.sequence == 2
+    assert frame.gap is True
 
 
 def test_runtime_services_recover_only_after_the_motor_owns_the_workspace(workspace) -> None:

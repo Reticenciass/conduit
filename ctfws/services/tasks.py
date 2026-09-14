@@ -144,7 +144,7 @@ class TaskManager:
             raise ValueError("A tarefa ainda está em execução e não pode ser repetida.")
         return self.submit(data, work)
 
-    def cancel(self, task_id: int) -> TaskRead:
+    def cancel(self, task_id: int, requested_by: str | None = None) -> TaskRead:
         task = self.get(task_id)
         if task.status in {
             TaskStatus.SUCCEEDED,
@@ -154,15 +154,27 @@ class TaskManager:
             TaskStatus.INTERRUPTED,
         }:
             return task
+        requested, event = self.workspace.tasks.request_cancel(task_id, requested_by)
+        if event is not None:
+            self.workspace.bus.publish(event)
         with self._lock:
             self._cancelled.add(task_id)
             future = self._futures.get(task_id)
             if future is not None:
-                future.cancel()
+                cancelled_before_start = future.cancel()
+            else:
+                cancelled_before_start = False
             async_task = self._async_tasks.get(task_id)
             if async_task is not None:
                 async_task.cancel()
-        return self._mark_cancelled(task_id)
+        if task.status == TaskStatus.QUEUED and cancelled_before_start:
+            return self._mark_cancelled(task_id)
+        if task.status == TaskStatus.QUEUED and async_task is None and future is None:
+            return self._mark_cancelled(task_id)
+        # A running synchronous worker cannot be force-killed safely.  Keep it
+        # visible as running until its cooperative boundary completes, while
+        # exposing cancel_requested in the durable task record.
+        return requested
 
     def is_cancelled(self, task_id: int) -> bool:
         with self._lock:
@@ -170,9 +182,13 @@ class TaskManager:
 
     def _run(self, task_id: int, work: TaskWork) -> None:
         if self.is_cancelled(task_id):
+            self._mark_cancelled(task_id)
             return
         self._heavy_slots.acquire()
         try:
+            if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
+                return
             self._update_with_event(task_id, status=TaskStatus.RUNNING, current_step="iniciando")
             result = work(self._progress_callback(task_id))
             if self.is_cancelled(task_id):
@@ -192,6 +208,7 @@ class TaskManager:
             )
         except Exception as error:
             if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
                 return
             self.logger.exception("task=%s failed", task_id)
             self._update_with_event(
@@ -215,6 +232,7 @@ class TaskManager:
             await asyncio.shield(acquire_task)
             acquired = True
             if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
                 return
             self._update_with_event(task_id, status=TaskStatus.RUNNING, current_step="iniciando")
             result = await work(self._progress_callback(task_id))
@@ -239,7 +257,9 @@ class TaskManager:
                 acquired = True
             elif acquire_task.done() and not acquire_task.cancelled():
                 acquired = bool(acquire_task.result())
-            if not self.is_cancelled(task_id):
+            if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
+            else:
                 self._update_with_event(
                     task_id,
                     status=TaskStatus.INTERRUPTED,
@@ -249,6 +269,7 @@ class TaskManager:
             raise
         except Exception as error:
             if self.is_cancelled(task_id):
+                self._mark_cancelled(task_id)
                 return
             self.logger.exception("async task=%s failed", task_id)
             self._update_with_event(

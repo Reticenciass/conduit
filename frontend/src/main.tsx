@@ -145,7 +145,24 @@ function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    let stopped = false;
+    let refreshTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshRef.current();
+      }, 120);
+    };
+    const waitForReconnect = (delay: number) => new Promise<void>(resolve => {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        resolve();
+      }, delay);
+    });
     const subscribe = async () => {
+      let workspaceId: number | null = null;
       try {
         const headers = new Headers();
         const token = localStorage.getItem(tokenKey);
@@ -153,22 +170,48 @@ function App() {
         const workspaces = await fetch("/api/v2/workspaces", { headers, signal: controller.signal });
         if (!workspaces.ok) return;
         const rows = await workspaces.json() as Json[];
-        const workspaceId = Number(rows[0]?.id);
+        workspaceId = Number(rows[0]?.id);
         if (!workspaceId) return;
         setWorkspaceId(workspaceId);
-        const response = await fetch(`/api/v2/workspaces/${workspaceId}/events`, { headers, signal: controller.signal });
-        if (!response.ok || !response.body) return;
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (!controller.signal.aborted) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          buffer += decoder.decode(chunk.value, { stream: true });
-          const frames = buffer.split("\n\n");
-          buffer = frames.pop() ?? "";
-          for (const frame of frames) {
-            if (frame.includes("data:")) void refreshRef.current();
+        const cursorKey = `ctfws.events.cursor.${workspaceId}`;
+        let lastEventId = Number(sessionStorage.getItem(cursorKey) ?? "0") || 0;
+        let retryDelay = 1000;
+        while (!stopped && !controller.signal.aborted) {
+          try {
+            const eventHeaders = new Headers(headers);
+            if (lastEventId > 0) eventHeaders.set("Last-Event-ID", String(lastEventId));
+            const response = await fetch(`/api/v2/workspaces/${workspaceId}/events`, { headers: eventHeaders, signal: controller.signal });
+            if (response.status === 401) {
+              setNeedsLogin(true);
+              return;
+            }
+            if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
+            retryDelay = 1000;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (!stopped && !controller.signal.aborted) {
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              buffer += decoder.decode(chunk.value, { stream: true });
+              const frames = buffer.split("\n\n");
+              buffer = frames.pop() ?? "";
+              for (const frame of frames) {
+                const id = frame.match(/(?:^|\n)id:\s*(\d+)/)?.[1];
+                if (id) {
+                  lastEventId = Number(id);
+                  sessionStorage.setItem(cursorKey, String(lastEventId));
+                }
+                if (frame.includes("data:")) scheduleRefresh();
+              }
+            }
+          } catch (error) {
+            if (controller.signal.aborted || stopped) return;
+            console.debug("SSE indisponível; tentando reconectar", error);
+          }
+          if (!stopped && !controller.signal.aborted) {
+            await waitForReconnect(retryDelay);
+            retryDelay = Math.min(retryDelay * 2, 8000);
           }
         }
       } catch (error) {
@@ -176,7 +219,12 @@ function App() {
       }
     };
     void subscribe();
-    return () => controller.abort();
+    return () => {
+      stopped = true;
+      controller.abort();
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+    };
   }, [needsLogin]);
 
   const openTerminal = async (connectionId?: number) => {
@@ -641,8 +689,9 @@ function Tools({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   const [conflict, setConflict] = useState("cancel");
   const load = () => void request<Json[]>("/tools").then(setTools).catch(() => setTools([]));
   useEffect(() => { void load(); }, []);
-  useEffect(() => { if (!remoteProfile && profiles[0]) setRemoteProfile(profiles[0].id); }, [profiles, remoteProfile]);
-
+  useEffect(() => {
+    if (!remoteProfile && profiles[0]) setRemoteProfile(profiles[0].id);
+  }, [profiles, remoteProfile]);
   const register = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
@@ -830,6 +879,10 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   };
   useEffect(() => { void load(); }, []);
   useEffect(() => { if (!remoteProfile && profiles[0]) setRemoteProfile(profiles[0].id); }, [profiles, remoteProfile]);
+  useEffect(() => {
+    setRemoteFiles([]);
+    setRemotePath(".");
+  }, [remoteProfile]);
   const uploadFiles = async (selectedFiles: FileList | File[]) => {
     const items = Array.from(selectedFiles);
     if (!items.length) return;
@@ -868,6 +921,10 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
   };
   const downloadRemote = async (file: Json) => {
     if (!remoteProfile) return;
+    if (String(file.kind) === "directory") {
+      setRemotePath(String(file.path));
+      return;
+    }
     try {
       const result = await request<Json>(`/connections/${remoteProfile}/download`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -887,7 +944,7 @@ function Files({ profiles, setNotice }: { profiles: Profile[]; setNotice: (value
       setNotice(`Upload remoto concluído: ${String(result.sha256 ?? "verificação pendente")}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   };
-  return <div className="content-grid"><section className="panel"><PanelHeader title="Workspace / Kali" subtitle="Arquivos locais do motor" /><label>Conflito de destino<select value={conflict} onChange={event => setConflict(event.target.value)}><option value="cancel">Cancelar e pedir decisão</option><option value="keep_both">Manter ambos</option><option value="replace">Substituir explicitamente</option></select></label><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input type="file" multiple disabled={uploading} onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); event.target.value = ""; }} /><span className="drop-icon">↑</span><strong>{uploading ? "Enviando arquivos..." : "Arraste ou selecione arquivos"}</strong><small>Seleção múltipla, hash SHA-256 e finalização atômica.</small></label>{loadError && <div className="error-message">Não foi possível listar loot/inbox: {loadError}<button className="button small secondary" onClick={() => void load()}>Tentar novamente</button></div>}<div className="file-list">{!loadError && !files.length && <Empty text="Nenhum arquivo nesta pasta" />}{files.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">▧</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><span className="muted">{String(file.size ?? "-")} bytes</span><button className="button small secondary" onClick={() => void registerEvidence(file)}>Registrar evidência</button>{remoteProfile > 0 && <button className="button small secondary" onClick={() => void uploadRemote(file)}>Enviar</button>}</div>)}</div></section><section className="panel"><PanelHeader title="Máquina remota" subtitle="Navegação via SFTP, sem shell remoto" />{profiles.length ? <><label>Conexão<select value={remoteProfile} onChange={event => setRemoteProfile(Number(event.target.value))}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.user}@{profile.host}</option>)}</select></label><label>Caminho remoto<input value={remotePath} onChange={event => setRemotePath(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browseRemote(); }} /></label><p className="muted">A política de conflito selecionada à esquerda também vale para downloads e uploads SFTP.</p><button className="button primary" onClick={() => void browseRemote()}>Navegar</button><div className="file-list">{remoteFiles.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">⇣</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><button className="button small secondary" onClick={() => void downloadRemote(file)}>Baixar</button></div>)}</div></> : <Empty text="Salve uma conexão SSH para navegar" />}</section></div>;
+  return <div className="content-grid"><section className="panel"><PanelHeader title="Workspace / Kali" subtitle="Arquivos locais do motor" /><label>Conflito de destino<select value={conflict} onChange={event => setConflict(event.target.value)}><option value="cancel">Cancelar e pedir decisão</option><option value="keep_both">Manter ambos</option><option value="replace">Substituir explicitamente</option></select></label><label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input type="file" multiple disabled={uploading} onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); event.target.value = ""; }} /><span className="drop-icon">↑</span><strong>{uploading ? "Enviando arquivos..." : "Arraste ou selecione arquivos"}</strong><small>Seleção múltipla, hash SHA-256 e finalização atômica.</small></label>{loadError && <div className="error-message">Não foi possível listar loot/inbox: {loadError}<button className="button small secondary" onClick={() => void load()}>Tentar novamente</button></div>}<div className="file-list">{!loadError && !files.length && <Empty text="Nenhum arquivo nesta pasta" />}{files.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">▧</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div><span className="muted">{String(file.size ?? "-")} bytes</span><button className="button small secondary" onClick={() => void registerEvidence(file)}>Registrar evidência</button>{remoteProfile > 0 && <button className="button small secondary" onClick={() => void uploadRemote(file)}>Enviar</button>}</div>)}</div></section><section className="panel"><PanelHeader title="Máquina remota" subtitle="Navegação via SFTP, sem shell remoto" />{profiles.length ? <><label>Conexão<select value={remoteProfile} onChange={event => setRemoteProfile(Number(event.target.value))}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.user}@{profile.host}</option>)}</select></label><label>Caminho remoto<input value={remotePath} onChange={event => setRemotePath(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browseRemote(); }} /></label><p className="muted">A política de conflito selecionada à esquerda também vale para downloads e uploads SFTP.</p><button className="button primary" onClick={() => void browseRemote()}>Navegar</button><div className="file-list">{remoteFiles.map(file => <div className="list-row" key={String(file.path)}><div className="row-icon">{String(file.kind) === "directory" ? "▰" : "⇣"}</div><div className="row-main"><strong>{String(file.name)}</strong><small>{String(file.path)}</small></div>{String(file.kind) === "directory" ? <button className="button small secondary" onClick={() => setRemotePath(String(file.path))}>Abrir pasta</button> : <button className="button small secondary" onClick={() => void downloadRemote(file)}>Baixar</button>}</div>)}</div></> : <Empty text="Salve uma conexão SSH para navegar" />}</section></div>;
 }
 
 function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onNewRemote, onClose, onShare, onRename }: { terminals: TerminalRow[]; selected: number | null; workspaceId: number | null; onSelect: (id: number | null) => void; onLocal: () => void; onNewRemote: (connectionId: number) => void; onClose: (id: number) => void; onShare: (id: number, shared: boolean) => void; onRename: (id: number, name: string) => void }) {
@@ -904,174 +961,240 @@ function TerminalView({ terminals, selected, workspaceId, onSelect, onLocal, onN
   const terminalAvailable = Boolean(row && ["active", "starting"].includes(row.status) && row.runtime_available !== false);
   const recordSequence = useCallback((sequence: number) => { if (selected) lastSequences.current[selected] = sequence; }, [selected]);
   const submitRename = () => { if (selected && renameValue.trim()) { onRename(selected, renameValue.trim()); setRenameOpen(false); } };
-  const terminalViews = selected && attached && terminalAvailable ? <>{splitId && splitRow ? <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px", minHeight: "450px" }}><XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} /><XtermTerminal terminalId={splitId} workspaceId={workspaceId} afterSequence={lastSequences.current[splitId] ?? 0} searchTerm={searchTerm} readOnly onSequence={sequence => { lastSequences.current[splitId] = sequence; }} /></div> : <XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={lastSequences.current[selected] ?? 0} searchTerm={searchTerm} onSequence={recordSequence} />}</> : selected ? <div className="empty large"><div className="empty-icon">◌</div><strong>{row?.status === "closed" ? "Terminal encerrado" : "Sessão não está ativa"}</strong><span>{String(row?.availability_reason ?? "O motor não possui esta sessão em execução.")}</span>{row?.reconnectable && typeof row.connection_id === "number" && <button className="button primary" onClick={() => onNewRemote(row.connection_id as number)}>Abrir novo terminal nesta máquina</button>}</div> : <div className="empty large"><div className="empty-icon">⌘</div><strong>Abra um terminal para começar</strong></div>;
+  const terminalViews = selected && attached && terminalAvailable ? <>{splitId && splitRow ? <div className="terminal-split"><XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={0} searchTerm={searchTerm} onSequence={recordSequence} /><XtermTerminal terminalId={splitId} workspaceId={workspaceId} afterSequence={0} searchTerm={searchTerm} readOnly onSequence={sequence => { lastSequences.current[splitId] = sequence; }} /></div> : <XtermTerminal terminalId={selected} workspaceId={workspaceId} afterSequence={0} searchTerm={searchTerm} onSequence={recordSequence} />}</> : selected && !attached ? <div className="empty large"><div className="empty-icon">◌</div><strong>Visualização desconectada</strong><span>O processo continua protegido pelo motor. Reconecte a visualização para acompanhar a saída.</span></div> : selected ? <div className="empty large"><div className="empty-icon">◌</div><strong>{row?.status === "closed" ? "Terminal encerrado" : "Sessão não está ativa"}</strong><span>{String(row?.availability_reason ?? "O motor não possui esta sessão em execução.")}</span>{row?.reconnectable && typeof row.connection_id === "number" && <button className="button primary" onClick={() => onNewRemote(row.connection_id as number)}>Abrir novo terminal nesta máquina</button>}</div> : <div className="empty large"><div className="empty-icon">⌘</div><strong>Abra um terminal para começar</strong></div>;
   return <div className="terminal-layout"><section className="panel terminal-tabs"><PanelHeader title="Terminais" action={<button className="text-button" onClick={onLocal}>+ Novo terminal</button>} />{terminals.map(item => <button className={selected === item.id ? "terminal-tab selected" : "terminal-tab"} key={item.id} onClick={() => onSelect(item.id)}><span>⌘</span><span><strong>{item.name ?? item.context_label}</strong><small>{item.context_label} · #{item.id} · {item.status} · {item.sharing === "shared" ? "compartilhado" : "privado"}</small></span></button>)}{!terminals.length && <Empty text="Nenhum terminal aberto" />}</section><section className="panel terminal-panel"><PanelHeader title={selected ? (row?.name ? String(row.name) : `Terminal #${selected}`) : "Selecione um terminal"} subtitle={row ? `${row.context_label} · ${row.sharing === "shared" ? "visualização compartilhada" : "visualização privada"} · saída não é gravada em disco por padrão` : "Escolha um terminal na lista"} action={selected ? <div className="panel-actions terminal-actions"><button className="button small secondary" onClick={() => onSelect(null)}>Ocultar</button><button className="button small secondary" onClick={() => setAttached(value => !value)}>{attached ? "Desconectar visualização" : "Reconectar visualização"}</button>{splitCandidates.length > 0 && <><button className="button small secondary" onClick={() => setSplitId(splitId ? null : splitCandidates[0].id)}>{splitId ? "Fechar divisão" : "Dividir tela"}</button>{!splitId && <select aria-label="Segundo terminal da divisão" value="" onChange={event => setSplitId(Number(event.target.value))}><option value="">Escolher segundo terminal…</option>{splitCandidates.map(item => <option key={item.id} value={item.id}>{item.name ?? item.context_label} · #{item.id}</option>)}</select>}</>}{row && <button className="button small secondary" onClick={() => { setRenameValue(String(row.name ?? "")); setRenameOpen(true); }}>{"Renomear"}</button>}{row && <button className="button small secondary" onClick={() => onShare(selected, row.sharing !== "shared")}>{row.sharing === "shared" ? "Tornar privado" : "Compartilhar visualização"}</button>}<button className="button small" onClick={() => onClose(selected)}>Encerrar</button></div> : undefined} />{selected && <div className="terminal-toolbar">{renameOpen && <><input aria-label="Novo nome do terminal" value={renameValue} onChange={event => setRenameValue(event.target.value)} onKeyDown={event => { if (event.key === "Enter") submitRename(); if (event.key === "Escape") setRenameOpen(false); }} /><button className="button small primary" onClick={submitRename}>Salvar nome</button><button className="button small secondary" onClick={() => setRenameOpen(false)}>Cancelar</button></>}<input aria-label="Buscar na saída" className="terminal-search" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Buscar na saída…" /></div>}{terminalViews}</section></div>;
 }
 
- function XtermTerminal({ terminalId, workspaceId, afterSequence, searchTerm, readOnly = false, onSequence }: { terminalId: number; workspaceId: number | null; afterSequence: number; searchTerm: string; readOnly?: boolean; onSequence: (sequence: number) => void }) {
-   const ref = useRef<HTMLDivElement>(null);
-   const terminalRef = useRef<Terminal | null>(null);
-   const onSequenceRef = useRef(onSequence);
-   const initialSequenceRef = useRef(afterSequence);
+const TERMINAL_MIN_COLUMNS = 2;
+const TERMINAL_MAX_COLUMNS = 500;
+const TERMINAL_MIN_ROWS = 1;
+const TERMINAL_MAX_ROWS = 500;
 
-   useEffect(() => {
-     onSequenceRef.current = onSequence;
-   }, [onSequence]);
+function XtermTerminal({ terminalId, workspaceId, afterSequence, searchTerm, readOnly = false, onSequence }: { terminalId: number; workspaceId: number | null; afterSequence: number; searchTerm: string; readOnly?: boolean; onSequence: (sequence: number) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const onSequenceRef = useRef(onSequence);
+  const initialSequenceRef = useRef(afterSequence);
 
-   useEffect(() => {
-     if (!ref.current) return;
-     const terminal = new Terminal({
-       convertEol: true,
-       cursorBlink: !readOnly,
-       disableStdin: readOnly,
-       fontSize: 13,
-       theme: { background: "#050912", foreground: "#c7f9dd" },
-     });
-     terminalRef.current = terminal;
-     const fit = new FitAddon();
-     terminal.loadAddon(fit);
-     terminal.open(ref.current);
-     fit.fit();
-     const host = ref.current;
-     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-     const token = localStorage.getItem(tokenKey);
-     const basePath = workspaceId
-       ? `/api/v2/workspaces/${workspaceId}/terminals/${terminalId}/stream`
-       : `${api}/terminals/${terminalId}/stream`;
-     const streamPath = `${basePath}?after_sequence=${initialSequenceRef.current}${readOnly ? "&readonly=1" : ""}`;
-     const socket = new WebSocket(
-       `${protocol}//${location.host}${streamPath}`,
-       token ? ["ctfws", token] : undefined,
-     );
-     socket.binaryType = "arraybuffer";
-     const pendingInput: string[] = [];
-     let pendingInputLength = 0;
-     let disposed = false;
-     let flushTimer: number | null = null;
-     let controlReady = workspaceId === null;
-     let hasControl = !readOnly;
-     const maxPendingInput = 128 * 1024;
-     const maxSocketBuffer = 1024 * 1024;
-     const writeNotice = (message: string) => terminal.write(`\r\n\x1b[33m[Conduit] ${message}\x1b[0m\r\n`);
-     const flushInput = () => {
-       if (socket.readyState !== WebSocket.OPEN || !controlReady || !hasControl) return;
-       while (pendingInput.length && socket.bufferedAmount < maxSocketBuffer) {
-         const data = pendingInput[0];
-         if (!data) { pendingInput.shift(); continue; }
-         try { socket.send(data); }
-         catch { break; }
-         pendingInput.shift();
-         pendingInputLength -= data.length;
-       }
-       if (pendingInput.length && flushTimer === null) {
-         flushTimer = window.setTimeout(() => {
-           flushTimer = null;
-           flushInput();
-         }, 25);
-       }
-     };
-     const sendInput = (data: string) => {
-       if (socket.readyState === WebSocket.OPEN && controlReady && hasControl && socket.bufferedAmount < maxSocketBuffer) {
-         try { socket.send(data); } catch { pendingInput.push(data); pendingInputLength += data.length; }
-         flushInput();
-         return;
-       }
-       if (pendingInputLength + data.length > maxPendingInput) {
-         writeNotice("A conexão ainda está iniciando; entrada excedente foi descartada.");
-         return;
-       }
-       pendingInput.push(data);
-       pendingInputLength += data.length;
-     };
-     const resize = () => {
-       fit.fit();
-       if (socket.readyState === WebSocket.OPEN && (!workspaceId || hasControl)) {
-         try {
-           socket.send(JSON.stringify({ action: "resize", columns: terminal.cols, rows: terminal.rows }));
-         } catch { writeNotice("Não foi possível atualizar o tamanho do terminal."); }
-       }
-     };
-     socket.onopen = () => {
-       terminal.focus();
-       if (!workspaceId) flushInput();
-       resize();
-     };
-     socket.onmessage = event => {
-       if (typeof event.data === "string") {
-         try {
-           const metadata = JSON.parse(event.data) as Json;
-           if (typeof metadata.sequence === "number") onSequenceRef.current(metadata.sequence);
-           if (metadata.gap) terminal.write("\r\n[aviso] A visualização retomou com uma lacuna de saída.\r\n");
-           if (metadata.type === "ready") {
-             controlReady = true;
-             hasControl = metadata.control === true && !readOnly;
-             flushInput();
-           } else if (metadata.type === "control") {
-             hasControl = metadata.granted === true;
-             flushInput();
-           } else if (metadata.type === "error" && metadata.code === "control_held") {
-             hasControl = false;
-           }
-           if (metadata.type === "error") {
-             const code = String(metadata.code ?? "terminal_error");
-             const message = typeof metadata.message === "string" ? metadata.message :
-               code === "control_held" ? "Outro observador controla a entrada deste terminal." :
-               "A operação do terminal falhou.";
-             writeNotice(`${code}: ${message}`);
-           } else if (metadata.type === "exit") {
-             writeNotice(`O processo terminou${metadata.code !== null && metadata.code !== undefined ? ` (código ${String(metadata.code)})` : ""}.`);
-           } else if (metadata.type === "ready" && metadata.control === false && !readOnly) {
-             writeNotice("Visualização conectada sem controle de entrada.");
-           }
-         } catch {
-           writeNotice("Recebida uma mensagem inválida do motor.");
-         }
-         return;
-       }
-       if (event.data instanceof ArrayBuffer) terminal.write(new Uint8Array(event.data));
-     };
-     socket.onerror = () => {
-       if (!disposed) writeNotice("Não foi possível manter a conexão do terminal.");
-     };
-     socket.onclose = () => {
-       if (!disposed) writeNotice("A visualização do terminal foi desconectada.");
-     };
-     const inputSubscription = !readOnly ? terminal.onData(sendInput) : null;
-     const focus = () => terminal.focus();
-     host.addEventListener("click", focus);
-     window.addEventListener("resize", resize);
-     const resizeObserver = new ResizeObserver(resize);
-     resizeObserver.observe(host);
-     resize();
-     return () => {
-       disposed = true;
-       window.removeEventListener("resize", resize);
-       resizeObserver.disconnect();
-       host.removeEventListener("click", focus);
-       inputSubscription?.dispose();
-       if (flushTimer !== null) window.clearTimeout(flushTimer);
-       pendingInput.length = 0;
-       socket.close();
-       terminal.dispose();
-       terminalRef.current = null;
-     };
-   }, [terminalId, workspaceId, readOnly]);
+  useEffect(() => {
+    onSequenceRef.current = onSequence;
+  }, [onSequence]);
 
-   useEffect(() => {
-     const terminal = terminalRef.current;
-     const needle = searchTerm.trim().toLocaleLowerCase();
-     if (!terminal || !needle) return;
-     for (let index = 0; index < terminal.buffer.active.length; index += 1) {
-       const line = terminal.buffer.active.getLine(index)?.translateToString() ?? "";
-       if (line.toLocaleLowerCase().includes(needle)) {
-         terminal.scrollToLine(index);
-         break;
-       }
-     }
-   }, [searchTerm]);
+  useEffect(() => {
+    const host = ref.current;
+    if (!host) return;
+    const terminal = new Terminal({
+      convertEol: true,
+      cursorBlink: !readOnly,
+      disableStdin: readOnly,
+      fontSize: 13,
+      theme: { background: "#050912", foreground: "#c7f9dd" },
+    });
+    terminalRef.current = terminal;
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(host);
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const token = localStorage.getItem(tokenKey);
+    const basePath = workspaceId
+      ? `/api/v2/workspaces/${workspaceId}/terminals/${terminalId}/stream`
+      : `${api}/terminals/${terminalId}/stream`;
+    const streamPath = `${basePath}?after_sequence=${initialSequenceRef.current}${readOnly ? "&readonly=1" : ""}`;
+    const socket = new WebSocket(
+      `${protocol}//${location.host}${streamPath}`,
+      token ? ["ctfws", token] : undefined,
+    );
+    socket.binaryType = "arraybuffer";
+    const encoder = new TextEncoder();
+    const pendingInput: Uint8Array[] = [];
+    let pendingInputLength = 0;
+    let disposed = false;
+    let allowInitialInputQueue = true;
+    let flushTimer: number | null = null;
+    let resizeFrame: number | null = null;
+    let lastSentDimensions = "";
+    let controlReady = workspaceId === null;
+    let hasControl = !readOnly;
+    let pendingOutputSequence: number | null = null;
+    const maxPendingInput = 128 * 1024;
+    const maxSocketBuffer = 1024 * 1024;
+    const writeNotice = (message: string) => terminal.write(`\r\n\x1b[33m[Conduit] ${message}\x1b[0m\r\n`);
+    const flushInput = () => {
+      if (socket.readyState !== WebSocket.OPEN || !controlReady || !hasControl) return;
+      while (pendingInput.length && socket.bufferedAmount < maxSocketBuffer) {
+        const data = pendingInput[0];
+        try {
+          socket.send(data);
+        } catch {
+          return;
+        }
+        pendingInput.shift();
+        pendingInputLength -= data.byteLength;
+      }
+      if (pendingInput.length && flushTimer === null) {
+        flushTimer = window.setTimeout(() => {
+          flushTimer = null;
+          flushInput();
+        }, 25);
+      }
+    };
+    const sendInput = (data: string) => {
+      const bytes = encoder.encode(data);
+      if (!bytes.byteLength) return;
+      if (socket.readyState === WebSocket.OPEN && controlReady && hasControl && socket.bufferedAmount < maxSocketBuffer) {
+        try {
+          socket.send(bytes);
+        } catch {
+          writeNotice("A entrada não pôde ser entregue; ela não será reenviada automaticamente.");
+        }
+        return;
+      }
+      if (!allowInitialInputQueue) {
+        writeNotice("A visualização não tem controle de entrada neste momento.");
+        return;
+      }
+      if (pendingInputLength + bytes.byteLength > maxPendingInput) {
+        writeNotice("A conexão ainda está iniciando; entrada excedente foi descartada.");
+        return;
+      }
+      pendingInput.push(bytes);
+      pendingInputLength += bytes.byteLength;
+    };
+    const applyResize = () => {
+      resizeFrame = null;
+      if (disposed || host.clientWidth <= 0 || host.clientHeight <= 0) return;
+      const dimensions = fit.proposeDimensions();
+      if (!dimensions) return;
+      const columns = Math.max(TERMINAL_MIN_COLUMNS, Math.min(TERMINAL_MAX_COLUMNS, Math.floor(dimensions.cols)));
+      const rows = Math.max(TERMINAL_MIN_ROWS, Math.min(TERMINAL_MAX_ROWS, Math.floor(dimensions.rows)));
+      if (!Number.isFinite(columns) || !Number.isFinite(rows)) return;
+      if (terminal.cols !== columns || terminal.rows !== rows) terminal.resize(columns, rows);
+      if (socket.readyState !== WebSocket.OPEN || readOnly || !controlReady || !hasControl) return;
+      const key = `${columns}x${rows}`;
+      if (key === lastSentDimensions) return;
+      lastSentDimensions = key;
+      try {
+        socket.send(JSON.stringify({ action: "resize", columns, rows }));
+      } catch {
+        writeNotice("Não foi possível atualizar o tamanho do terminal.");
+      }
+    };
+    const resize = () => {
+      if (resizeFrame === null) resizeFrame = window.requestAnimationFrame(applyResize);
+    };
+    socket.onopen = () => {
+      terminal.focus();
+      if (!workspaceId) {
+        allowInitialInputQueue = false;
+        flushInput();
+      }
+      resize();
+    };
+    socket.onmessage = event => {
+      if (typeof event.data === "string") {
+        try {
+          const metadata = JSON.parse(event.data) as Json;
+          if (metadata.type === "output" && typeof metadata.sequence === "number") {
+            pendingOutputSequence = metadata.sequence;
+          }
+          if (metadata.gap) terminal.write("\r\n[aviso] A visualização retomou com uma lacuna de saída.\r\n");
+          if (metadata.type === "ready") {
+            controlReady = true;
+            hasControl = metadata.control === true && !readOnly;
+            if (hasControl) lastSentDimensions = "";
+            allowInitialInputQueue = false;
+            if (!hasControl) pendingInput.length = 0;
+            pendingInputLength = hasControl ? pendingInputLength : 0;
+            flushInput();
+            resize();
+          } else if (metadata.type === "control") {
+            hasControl = metadata.granted === true;
+            if (hasControl) lastSentDimensions = "";
+            if (!hasControl) {
+              pendingInput.length = 0;
+              pendingInputLength = 0;
+            }
+            flushInput();
+            resize();
+          } else if (metadata.type === "error" && metadata.code === "control_held") {
+            hasControl = false;
+            pendingInput.length = 0;
+            pendingInputLength = 0;
+          }
+          if (metadata.type === "error") {
+            const code = String(metadata.code ?? "terminal_error");
+            const message = typeof metadata.message === "string" ? metadata.message :
+              code === "control_held" ? "Outro observador controla a entrada deste terminal." :
+              "A operação do terminal falhou.";
+            writeNotice(`${code}: ${message}`);
+          } else if (metadata.type === "exit") {
+            writeNotice(`O processo terminou${metadata.code !== null && metadata.code !== undefined ? ` (código ${String(metadata.code)})` : ""}.`);
+          } else if (metadata.type === "ready" && metadata.control === false && !readOnly) {
+            writeNotice("Visualização conectada sem controle de entrada.");
+          }
+        } catch {
+          writeNotice("Recebida uma mensagem inválida do motor.");
+        }
+        return;
+      }
+      if (event.data instanceof ArrayBuffer) {
+        const sequence = pendingOutputSequence;
+        pendingOutputSequence = null;
+        terminal.write(new Uint8Array(event.data), () => {
+          if (disposed || sequence === null) return;
+          onSequenceRef.current(sequence);
+          if (socket.readyState === WebSocket.OPEN) {
+            try { socket.send(JSON.stringify({ type: "ack", sequence })); } catch { /* socket is closing */ }
+          }
+        });
+      }
+    };
+    socket.onerror = () => {
+      if (!disposed) writeNotice("Não foi possível manter a conexão do terminal.");
+    };
+    socket.onclose = () => {
+      allowInitialInputQueue = false;
+      pendingInput.length = 0;
+      pendingInputLength = 0;
+      if (!disposed) writeNotice("A visualização do terminal foi desconectada; abra a visualização novamente para reconectar.");
+    };
+    const inputSubscription = !readOnly ? terminal.onData(sendInput) : null;
+    const focus = () => terminal.focus();
+    host.addEventListener("click", focus);
+    window.addEventListener("resize", resize);
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(host);
+    resize();
+    return () => {
+      disposed = true;
+      window.removeEventListener("resize", resize);
+      resizeObserver.disconnect();
+      host.removeEventListener("click", focus);
+      inputSubscription?.dispose();
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      pendingInput.length = 0;
+      socket.close();
+      terminal.dispose();
+      terminalRef.current = null;
+    };
+  }, [terminalId, workspaceId, readOnly]);
 
-   return <div className="xterm-host" ref={ref} />;
- }
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const needle = searchTerm.trim().toLocaleLowerCase();
+    if (!terminal || !needle) return;
+    for (let index = 0; index < terminal.buffer.active.length; index += 1) {
+      const line = terminal.buffer.active.getLine(index)?.translateToString() ?? "";
+      if (line.toLocaleLowerCase().includes(needle)) {
+        terminal.scrollToLine(index);
+        break;
+      }
+    }
+  }, [searchTerm]);
+
+  return <div className="xterm-host" ref={ref} />;
+}
 
 function ConnectionPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (id: number, password?: string, inspectAfterSave?: boolean, credentialKind?: "password" | "key_passphrase") => void }) { const [name, setName] = useState(""); const [ssh, setSsh] = useState("ssh kali@10.0.0.5 -p 22"); const [temporaryPassword, setTemporaryPassword] = useState(""); const [authMethod, setAuthMethod] = useState("agent_or_key"); const [parsed, setParsed] = useState<Json | null>(null); const [error, setError] = useState(""); const jumpTargets = Array.isArray(parsed?.jump_targets) ? parsed.jump_targets as Json[] : []; const unresolvedJumps = Array.isArray(parsed?.unresolved_jump_targets) ? parsed.unresolved_jump_targets as Json[] : []; const credentialKind = authMethod === "key_passphrase" ? "key_passphrase" as const : "password" as const; const parse = async () => { try { setError(""); setParsed(await request<Json>("/connections/parse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ssh }) })); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }; const save = async (inspectAfterSave: boolean) => { if (!parsed || unresolvedJumps.length) return; try { const created = await request<Json>("/connections", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, host: parsed.host, user: parsed.user, port: parsed.port, identity_file: parsed.identity_file, known_hosts_file: parsed.known_hosts_file, auth_method: authMethod, jump_profile_ids: Array.isArray(parsed.jump_profile_ids) ? parsed.jump_profile_ids : [] }) }); const password = temporaryPassword; setTemporaryPassword(""); onSaved(Number(created.id), password || undefined, inspectAfterSave, password ? credentialKind : undefined); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }; const canSave = Boolean(parsed && name && !unresolvedJumps.length); return <section className="panel connection-panel"><div className="panel-heading"><div><h2>Conectar e inspecionar</h2><p>O comando é interpretado como dados; não executamos texto colado.</p></div><button className="icon-button" onClick={onClose}>×</button></div><div className="form-grid"><label>Nome da conexão<input value={name} onChange={event => setName(event.target.value)} placeholder="jump-01" /></label><label>Comando SSH<input value={ssh} onChange={event => setSsh(event.target.value)} /></label></div><div className="form-grid"><label>Método de autenticação<select value={authMethod} onChange={event => setAuthMethod(event.target.value)}><option value="agent_or_key">SSH agent ou chave sem passphrase</option><option value="password">Senha SSH temporária</option><option value="key_passphrase">Passphrase da chave temporária</option></select></label><label>Credencial temporária (não salva)<input type="password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} placeholder={authMethod === "key_passphrase" ? "passphrase da chave, usada só nesta tentativa" : "opcional; use agent/chave por padrão"} autoComplete="new-password" /></label></div><div className="panel-actions"><button className="button secondary" onClick={() => void parse()}>Validar comando</button>{parsed && <div className="parsed-preview"><span>Destino identificado</span><strong>{String(parsed.user)}@{String(parsed.host)}:{String(parsed.port)}</strong>{jumpTargets.length > 0 && <small>Saltos: {jumpTargets.map(item => `${String(item.user ?? "")}${item.user ? "@" : ""}${String(item.host)}:${String(item.port)}`).join(", ")}</small>}{unresolvedJumps.length > 0 && <small className="error-message">Cadastre os saltos ProxyJump antes de salvar.</small>}</div>}<button className="button secondary" disabled={!canSave} onClick={() => void save(false)}>Salvar perfil</button><button className="button primary" disabled={!canSave} onClick={() => void save(true)}>Conectar e inspecionar</button></div>{error && <div className="error-message">{error}</div>}</section>; }
 

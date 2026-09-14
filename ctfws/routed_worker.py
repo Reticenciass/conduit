@@ -10,10 +10,11 @@ from __future__ import annotations
 import argparse
 import os
 import pwd
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from ctfws.core.bounded_process import run_bounded_process
 
 
 def _setns(fd: int) -> None:
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen")
     parser.add_argument("--api-listen")
     parser.add_argument("--run-program")
+    parser.add_argument("--run-timeout", type=float, default=60.0)
     parser.add_argument("--run-arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if os.name == "nt":
@@ -93,15 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     posix_os.setuid(account.pw_uid)
     if args.run_program is not None:
         command = [args.run_program, *(args.run_arguments or [])]
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        output, _ = process.communicate()
-        sys.stdout.buffer.write((output or b"")[: 4 * 1024 * 1024])
-        return int(process.returncode or 0)
+        result = run_bounded_process(command, args.run_timeout)
+        sys.stdout.buffer.write(result.output)
+        return int(result.returncode or 0)
     assert (
         args.proxy is not None
         and args.config is not None

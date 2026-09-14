@@ -8,13 +8,16 @@ install -d -m 0755 /opt/ctfws /opt/ctfws/releases
 # namespace exists, so create the mount point during installation as well.
 install -d -m 0755 /run/netns
 install -d -m 0750 /var/lib/ctfws /var/lib/ctfws/workspace /etc/ctfws
+if ! getent group ctfws >/dev/null 2>&1; then
+  groupadd --system ctfws
+fi
 if ! id -u ctfws >/dev/null 2>&1; then
-  useradd --system --home-dir /var/lib/ctfws --shell /usr/sbin/nologin ctfws
+  useradd --system --gid ctfws --home-dir /var/lib/ctfws --shell /usr/sbin/nologin ctfws
 fi
 # The unprivileged motor reads the pinned manifest at runtime. Keep the
 # directory non-writable to the service while allowing its owner/group to
 # traverse it; the privileged helper remains independently sandboxed.
-chown ctfws:ctfws /etc/ctfws
+chown root:ctfws /etc/ctfws
 python3 -m venv /opt/ctfws/.venv
 /opt/ctfws/.venv/bin/python -m pip install --upgrade pip
 # Install a wheel, not an editable checkout.  The systemd service runs as the
@@ -88,7 +91,7 @@ sed \
   -e "s|^agent_linux_amd64_sha256 =.*|agent_linux_amd64_sha256 = \"${ligolo_agent_amd64_sha256}\"|" \
   -e "s|^agent_linux_arm64_sha256 =.*|agent_linux_arm64_sha256 = \"${ligolo_agent_arm64_sha256}\"|" \
   "${project_dir}/deploy/compatibility.toml" > "${ligolo_manifest_path}"
-chown ctfws:ctfws "${ligolo_manifest_path}"
+chown root:ctfws "${ligolo_manifest_path}"
 chmod 0640 "${ligolo_manifest_path}"
 
 install -d -m 0755 /usr/local/bin
@@ -146,8 +149,13 @@ install_user_launchers() {
 
 install_user_launchers
 
-chown -R ctfws:ctfws /opt/ctfws /var/lib/ctfws
-chmod 0755 /opt/ctfws /opt/ctfws/releases
+# Keep executable code and the helper's Python runtime root-owned. The motor
+# can read the package through its ctfws group, but cannot replace code that a
+# root service will execute. Workspace state remains writable by the motor.
+chown -R root:ctfws /opt/ctfws
+chmod -R u+rwX,g+rX,o-rwx /opt/ctfws
+chown -R ctfws:ctfws /var/lib/ctfws
+chmod 0750 /opt/ctfws /opt/ctfws/releases
 chmod 0750 /var/lib/ctfws /etc/ctfws
 # Existing workspaces may predate the routed runtime. The motor and its
 # separately privileged helper share these two group-writable directories;
@@ -175,7 +183,7 @@ if [ ! -s /etc/ctfws/ctfws.env ]; then
   bootstrap_token="$(/opt/ctfws/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(24))')"
   umask 0077
   printf 'CTFWS_BOOTSTRAP_TOKEN=%s\n' "${bootstrap_token}" > /etc/ctfws/ctfws.env
-  chown ctfws:ctfws /etc/ctfws/ctfws.env
+  chown root:ctfws /etc/ctfws/ctfws.env
   echo "Código de bootstrap inicial (guarde-o; ele não será mostrado novamente): ${bootstrap_token}"
 fi
 
@@ -202,8 +210,8 @@ append_env CTFWS_LIGOLO_AGENT_ARM64_SHA256 "${ligolo_agent_arm64_sha256}"
 # as the administrator enables that component, without enabling root network
 # operations during installation.
 append_env CTFWS_ENABLE_ROUTED_CONTEXTS "1"
-chmod 0600 /etc/ctfws/ctfws.env
-chown ctfws:ctfws /etc/ctfws/ctfws.env
+chmod 0640 /etc/ctfws/ctfws.env
+chown root:ctfws /etc/ctfws/ctfws.env
 
 install -m 0644 "${project_dir}/deploy/ctfws.service" /etc/systemd/system/ctfws.service
 install -m 0644 "${project_dir}/deploy/ctfws-namespace-helper.service" /etc/systemd/system/ctfws-namespace-helper.service

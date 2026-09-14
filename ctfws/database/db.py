@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 
 class Database:
@@ -960,6 +960,27 @@ class Database:
                     )
                 connection.execute("INSERT INTO schema_version(version) VALUES (34)")
                 current = 34
+
+            if current < 35:
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(workspace_tasks)").fetchall()
+                }
+                if "cancel_requested" not in columns:
+                    connection.execute(
+                        "ALTER TABLE workspace_tasks ADD COLUMN cancel_requested "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "cancel_requested_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE workspace_tasks ADD COLUMN cancel_requested_at TEXT"
+                    )
+                if "cancel_requested_by" not in columns:
+                    connection.execute(
+                        "ALTER TABLE workspace_tasks ADD COLUMN cancel_requested_by TEXT"
+                    )
+                connection.execute("INSERT INTO schema_version(version) VALUES (35)")
+                current = 35
 
             if current > SCHEMA_VERSION:
                 raise RuntimeError(

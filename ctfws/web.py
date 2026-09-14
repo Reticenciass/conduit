@@ -1297,10 +1297,12 @@ def create_app(paths: WorkspacePaths) -> Any:
     @app.post("/api/v1/jobs/{job_id}/cancel")
     @app.post("/api/v2/jobs/{job_id}/cancel")
     @app.post("/api/v2/workspaces/{workspace_id}/jobs/{job_id}/cancel")
-    def job_cancel(job_id: int, workspace_id: int | None = None) -> dict[str, Any]:
+    def job_cancel(
+        job_id: int, request: Request, workspace_id: int | None = None
+    ) -> dict[str, Any]:
         require_workspace(workspace_id)
         try:
-            return tasks.cancel(job_id).model_dump(mode="json")
+            return tasks.cancel(job_id, requested_by=actor_for(request)).model_dump(mode="json")
         except Exception as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -2067,6 +2069,11 @@ def create_app(paths: WorkspacePaths) -> Any:
                                         await websocket.send_json(
                                             {"type": "control", "granted": True}
                                         )
+                                    text = ""
+                                elif payload.get("type") == "ack":
+                                    # Output acknowledgements are advisory for
+                                    # now.  They must never be forwarded to a
+                                    # shell as literal JSON input.
                                     text = ""
                                 else:
                                     text = str(payload.get("data", ""))

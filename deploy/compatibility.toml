@@ -2,8 +2,8 @@
 # automaticamente para recursos avançados; valide-as no laboratório autorizado.
 
 [ctfws]
-version = "0.28.0"
-schema = 34
+version = "0.28.1"
+schema = 35
 
 [openssh]
 minimum_major = 8

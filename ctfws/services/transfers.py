@@ -7,6 +7,7 @@ import hashlib
 import os
 import posixpath
 import shlex
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -356,7 +357,14 @@ class SFTPTransferService:
         result: list[dict[str, str]] = []
         for entry in entries:
             name = str(getattr(entry, "filename", entry))
-            result.append({"name": name, "path": posixpath.join(remote, name), "kind": "entry"})
+            attrs = getattr(entry, "attrs", None)
+            permissions = getattr(attrs, "permissions", None)
+            kind = (
+                "directory"
+                if isinstance(permissions, int) and stat.S_ISDIR(permissions)
+                else "file" if isinstance(permissions, int) else "entry"
+            )
+            result.append({"name": name, "path": posixpath.join(remote, name), "kind": kind})
         return result
 
     def upload(

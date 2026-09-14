@@ -20,6 +20,7 @@ try:  # pragma: no cover - pwd only exists on POSIX.
 except ImportError:  # pragma: no cover - exercised by Windows development.
     pwd = None  # type: ignore[assignment]
 
+from ctfws.core.bounded_process import run_bounded_process
 from ctfws.core.process import process_identity, process_matches
 from ctfws.pivot.manifest import ligolo_manifest_status
 
@@ -405,33 +406,17 @@ class RoutedNamespaceHelper:
             spec.namespace,
             "--run-program",
             spec.program,
+            "--run-timeout",
+            str(spec.timeout_seconds),
             "--run-arguments",
             *spec.arguments,
         ]
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        timed_out = False
-        try:
-            data, _ = process.communicate(timeout=spec.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            os.killpg(process.pid, signal.SIGTERM)  # type: ignore[attr-defined]
-            try:
-                data, _ = process.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, getattr(signal, "SIGKILL", 9))  # type: ignore[attr-defined]
-                data, _ = process.communicate(timeout=2)
-        data = data or b""
+        bounded = run_bounded_process(command, spec.timeout_seconds)
         return RoutedCommandResult(
-            process.returncode,
-            timed_out,
-            data[: 4 * 1024 * 1024].decode("utf-8", errors="replace"),
-            len(data) > 4 * 1024 * 1024,
+            bounded.returncode,
+            bounded.timed_out,
+            bounded.output.decode("utf-8", errors="replace"),
+            bounded.output_truncated,
         )
 
     def _start_proxy_local(self, spec: RoutedProxySpec) -> RoutedProxyResult:

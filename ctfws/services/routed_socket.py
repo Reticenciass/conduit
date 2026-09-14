@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import stat
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,6 +28,7 @@ class RoutedNamespaceSocketClient:
 
     VERSION = 1
     MAX_FRAME_BYTES = 64 * 1024
+    MAX_RESPONSE_FRAME_BYTES = 8 * 1024 * 1024
 
     def __init__(self, socket_path: Path, *, timeout: float = 5.0) -> None:
         self.socket_path = socket_path
@@ -100,7 +102,7 @@ class RoutedNamespaceSocketClient:
                     "log_path": spec.log_path,
                     "api_password": spec.api_password,
                 },
-            }
+            },
         )
         try:
             raw_pid = response.get("pid")
@@ -165,7 +167,8 @@ class RoutedNamespaceSocketClient:
                     "arguments": list(spec.arguments),
                     "timeout_seconds": spec.timeout_seconds,
                 },
-            }
+            },
+            timeout=max(self.timeout, float(spec.timeout_seconds) + 10),
         )
         output = response.get("output")
         returncode = response.get("returncode")
@@ -203,18 +206,20 @@ class RoutedNamespaceSocketClient:
         }
         return self._request_custom(payload)
 
-    def _request_custom(self, payload: dict[str, object]) -> dict[str, object]:
+    def _request_custom(
+        self, payload: dict[str, object], *, timeout: float | None = None
+    ) -> dict[str, object]:
         frame = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
             "utf-8"
         )
         if len(frame) > self.MAX_FRAME_BYTES:
             raise ValueError("O lote de namespace excede o limite do protocolo local.")
         with socket.socket(UNIX_FAMILY, socket.SOCK_STREAM) as channel:
-            channel.settimeout(self.timeout)
+            channel.settimeout(self.timeout if timeout is None else timeout)
             try:
                 channel.connect(str(self.socket_path))
                 channel.sendall(frame)
-                response_frame = self._receive_frame(channel)
+                response_frame = self._receive_frame(channel, self.MAX_RESPONSE_FRAME_BYTES)
             except OSError as error:
                 raise RuntimeError(
                     f"Não foi possível contactar o helper de namespace: {error}"
@@ -229,9 +234,9 @@ class RoutedNamespaceSocketClient:
             raise RuntimeError(str(response.get("message", "O helper recusou a operação.")))
         return response
 
-    def _receive_frame(self, channel: socket.socket) -> bytes:
+    def _receive_frame(self, channel: socket.socket, limit: int) -> bytes:
         received = bytearray()
-        while len(received) <= self.MAX_FRAME_BYTES:
+        while len(received) <= limit:
             chunk = channel.recv(4096)
             if not chunk:
                 break
@@ -247,6 +252,7 @@ class RoutedNamespaceSocketServer:
 
     VERSION = RoutedNamespaceSocketClient.VERSION
     MAX_FRAME_BYTES = RoutedNamespaceSocketClient.MAX_FRAME_BYTES
+    MAX_RESPONSE_FRAME_BYTES = RoutedNamespaceSocketClient.MAX_RESPONSE_FRAME_BYTES
     MAX_OPERATIONS = 256
 
     def __init__(self, helper: Any, socket_path: Path | str) -> None:
@@ -275,9 +281,12 @@ class RoutedNamespaceSocketServer:
                     if self._closed:
                         break
                     raise
-                with channel:
-                    channel.settimeout(10.0)
-                    self._serve_channel(channel)
+                threading.Thread(
+                    target=self._serve_client,
+                    args=(channel,),
+                    name="ctfws-helper-client",
+                    daemon=True,
+                ).start()
         finally:
             self._server = None
             server.close()
@@ -293,7 +302,7 @@ class RoutedNamespaceSocketServer:
 
     def _serve_channel(self, channel: socket.socket) -> None:
         try:
-            payload = self._decode_payload(self._receive_frame(channel))
+            payload = self._decode_payload(self._receive_frame(channel, self.MAX_FRAME_BYTES))
             response = self._dispatch(payload)
         except Exception as error:  # The protocol must keep the helper alive after bad input.
             response = {
@@ -304,7 +313,7 @@ class RoutedNamespaceSocketServer:
         frame = (json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
             "utf-8"
         )
-        if len(frame) > self.MAX_FRAME_BYTES:
+        if len(frame) > self.MAX_RESPONSE_FRAME_BYTES:
             frame = (
                 json.dumps(
                     {
@@ -317,6 +326,11 @@ class RoutedNamespaceSocketServer:
                 + b"\n"
             )
         channel.sendall(frame)
+
+    def _serve_client(self, channel: socket.socket) -> None:
+        with channel:
+            channel.settimeout(10.0)
+            self._serve_channel(channel)
 
     def _dispatch(self, payload: dict[str, object]) -> dict[str, object]:
         if payload.get("version") != self.VERSION:
@@ -587,9 +601,9 @@ class RoutedNamespaceSocketServer:
         except OSError:
             return
 
-    def _receive_frame(self, channel: socket.socket) -> bytes:
+    def _receive_frame(self, channel: socket.socket, limit: int) -> bytes:
         received = bytearray()
-        while len(received) <= self.MAX_FRAME_BYTES:
+        while len(received) <= limit:
             chunk = channel.recv(4096)
             if not chunk:
                 break

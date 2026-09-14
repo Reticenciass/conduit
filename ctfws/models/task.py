@@ -47,5 +47,8 @@ class TaskRead(TaskCreate):
     result: dict[str, object]
     error_code: str | None
     error_message: str | None
+    cancel_requested: bool = False
+    cancel_requested_at: datetime | None = None
+    cancel_requested_by: str | None = None
     created_at: datetime
     updated_at: datetime

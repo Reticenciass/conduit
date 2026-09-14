@@ -52,7 +52,8 @@ class RuntimeTerminal:
     eof: bool = False
     stopping: bool = False
     sequence: int = 0
-    history: deque[tuple[int, bytes]] = field(default_factory=lambda: deque(maxlen=512))
+    history: deque[tuple[int, bytes]] = field(default_factory=deque)
+    history_bytes: int = 0
     remote_process: Any | None = None
     remote_task: asyncio.Task[None] | None = None
     loop: asyncio.AbstractEventLoop | None = None
@@ -410,8 +411,6 @@ class TerminalManager:
         runtime.stopping = True
         if runtime.remote_process is not None:
             self._close_remote_sync(runtime)
-            with self._lock:
-                self._terminals.pop(terminal_id, None)
             return self.workspace.terminals.update_runtime(
                 terminal_id,
                 status=TerminalStatus.CLOSED,
@@ -435,14 +434,14 @@ class TerminalManager:
             except subprocess.TimeoutExpired:
                 process.kill()
         exit_code = process.poll()
+        if runtime.reader is not None and runtime.reader is not threading.current_thread():
+            runtime.reader.join(timeout=1)
         if runtime.master_fd is not None:
             try:
                 os.close(runtime.master_fd)
             except OSError:
                 pass
             runtime.master_fd = None
-        with self._lock:
-            self._terminals.pop(terminal_id, None)
         return self.workspace.terminals.update_runtime(
             terminal_id,
             status=TerminalStatus.CLOSED,
@@ -464,12 +463,22 @@ class TerminalManager:
         for terminal_id, runtime in items:
             if runtime.remote_process is not None:
                 current = self.workspace.terminals.get(terminal_id)
-                if runtime.eof and current is not None and self._is_drained_runtime(runtime):
+                if (
+                    runtime.eof
+                    and current is not None
+                    and not runtime.subscribers
+                    and self._is_drained_runtime(runtime)
+                ):
                     with self._lock:
                         self._terminals.pop(terminal_id, None)
                 continue
             exit_code = runtime.process.poll()
             if exit_code is None:
+                continue
+            # The reader may still have bytes in the PTY after poll() reports
+            # the child exit.  Keep ownership until EOF so the final output
+            # can be delivered to every viewer.
+            if not runtime.eof:
                 continue
             current = self.workspace.terminals.get(terminal_id)
             if current is not None and current.status in {
@@ -483,7 +492,7 @@ class TerminalManager:
                     exit_code=exit_code,
                     clear_engine_id=True,
                 )
-            if self._is_drained_runtime(runtime):
+            if not runtime.subscribers and self._is_drained_runtime(runtime):
                 with self._lock:
                     self._terminals.pop(terminal_id, None)
 
@@ -493,6 +502,16 @@ class TerminalManager:
             return output.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    @staticmethod
+    def _record_history(runtime: RuntimeTerminal, frame: TerminalFrame) -> None:
+        """Keep a bounded byte history without letting frame count hide size."""
+
+        runtime.history.append((frame.sequence, frame.data))
+        runtime.history_bytes += len(frame.data)
+        while runtime.history and runtime.history_bytes > 4 * 1024 * 1024:
+            _sequence, data = runtime.history.popleft()
+            runtime.history_bytes -= len(data)
 
     @staticmethod
     def _is_drained_runtime(runtime: RuntimeTerminal) -> bool:
@@ -516,7 +535,7 @@ class TerminalManager:
                 with self._lock:
                     runtime.sequence += 1
                     frame = TerminalFrame(runtime.sequence, chunk)
-                    runtime.history.append((frame.sequence, frame.data))
+                    self._record_history(runtime, frame)
                     subscribers = list(runtime.subscribers.items())
                 if not subscribers:
                     self._put_with_backpressure(runtime, chunk)
@@ -524,20 +543,33 @@ class TerminalManager:
                     for token, output in subscribers:
                         self._put_subscriber_with_backpressure(runtime, token, output, frame)
         finally:
-            runtime.eof = True
+            with self._lock:
+                runtime.eof = True
             if runtime.master_fd is not None:
                 try:
                     os.close(runtime.master_fd)
                 except OSError:
                     pass
                 runtime.master_fd = None
+            current = self.workspace.terminals.get(runtime.terminal_id)
+            if current is not None and current.status in {
+                TerminalStatus.STARTING,
+                TerminalStatus.ACTIVE,
+            }:
+                self.workspace.terminals.update_runtime(
+                    runtime.terminal_id,
+                    status=TerminalStatus.EXITED,
+                    pid=None,
+                    exit_code=runtime.process.poll(),
+                    clear_engine_id=True,
+                )
 
     async def _pump_remote_output(self, runtime: RuntimeTerminal) -> None:
         """Read an AsyncSSH PTY without blocking the event loop."""
 
         stream = getattr(runtime.remote_process, "stdout", None)
         try:
-            while stream is not None and not runtime.stopping:
+            while stream is not None:
                 chunk = await stream.read(4096)
                 if isinstance(chunk, str):
                     chunk = chunk.encode("utf-8", errors="replace")
@@ -546,7 +578,7 @@ class TerminalManager:
                 with self._lock:
                     runtime.sequence += 1
                     frame = TerminalFrame(runtime.sequence, chunk)
-                    runtime.history.append((frame.sequence, frame.data))
+                    self._record_history(runtime, frame)
                     subscribers = list(runtime.subscribers.items())
                 if not subscribers:
                     await self._put_async_with_backpressure(runtime, chunk)
@@ -575,23 +607,13 @@ class TerminalManager:
         output: queue.Queue[TerminalFrame],
         frame: TerminalFrame,
     ) -> None:
-        while not runtime.stopping:
-            try:
-                output.put_nowait(frame)
-                return
-            except queue.Full:
-                with self._lock:
-                    if runtime.subscribers.get(token) is not output:
-                        return
-                await asyncio.sleep(0.02)
+        try:
+            output.put_nowait(frame)
+        except queue.Full:
+            self._drop_slow_subscriber_frame(runtime, token, output, frame)
 
     async def _put_async_with_backpressure(self, runtime: RuntimeTerminal, chunk: bytes) -> None:
-        while not runtime.stopping:
-            try:
-                runtime.output.put_nowait(chunk)
-                return
-            except queue.Full:
-                await asyncio.sleep(0.02)
+        self._put_with_backpressure(runtime, chunk)
 
     async def _close_remote(self, runtime: RuntimeTerminal) -> None:
         process = runtime.remote_process
@@ -623,27 +645,52 @@ class TerminalManager:
         output: queue.Queue[TerminalFrame],
         frame: TerminalFrame,
     ) -> None:
-        """Wait for a slow viewer or stop waiting once it disconnects."""
+        """Deliver without allowing one slow viewer to block the PTY reader."""
 
-        while True:
-            try:
-                output.put(frame, timeout=0.1)
+        try:
+            output.put_nowait(frame)
+        except queue.Full:
+            self._drop_slow_subscriber_frame(runtime, token, output, frame)
+
+    def _drop_slow_subscriber_frame(
+        self,
+        runtime: RuntimeTerminal,
+        token: str,
+        output: queue.Queue[TerminalFrame],
+        frame: TerminalFrame,
+    ) -> None:
+        """Replace old data with a gap marker when a viewer cannot keep up."""
+
+        with self._lock:
+            # The queue identity is checked before dropping anything.  The
+            # caller can race with unsubscribe, and a stale queue must never
+            # receive more data after that point.
+            if runtime.subscribers.get(token) is not output:
                 return
+            try:
+                output.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                output.put_nowait(TerminalFrame(frame.sequence, frame.data, gap=True))
             except queue.Full:
-                with self._lock:
-                    if runtime.subscribers.get(token) is not output:
-                        return
+                pass
 
     @staticmethod
     def _put_with_backpressure(runtime: RuntimeTerminal, chunk: bytes) -> None:
-        """Bound memory while applying flow control to the producer."""
+        """Keep the legacy queue bounded without blocking the PTY reader."""
 
-        while not runtime.stopping:
+        try:
+            runtime.output.put_nowait(chunk)
+        except queue.Full:
             try:
-                runtime.output.put(chunk, timeout=0.1)
-                return
+                runtime.output.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                runtime.output.put_nowait(chunk)
             except queue.Full:
-                continue
+                pass
 
     @staticmethod
     def _cwd(value: str | None) -> Path:

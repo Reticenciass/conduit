@@ -27,8 +27,10 @@ class TaskRepository:
                 INSERT INTO workspace_tasks(
                     lab_id, kind, resource_type, resource_id, status, progress,
                     current_step, total_steps, completed_steps, result_json,
-                    idempotency_key, idempotency_hash, requested_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, 0, '{}', ?, ?, ?, ?, ?)
+                    idempotency_key, idempotency_hash, requested_by,
+                    cancel_requested, cancel_requested_at, cancel_requested_by,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, 0, '{}', ?, ?, ?, 0, NULL, NULL, ?, ?)
                 """,
                 (
                     self.lab_id,
@@ -48,6 +50,50 @@ class TaskRepository:
             ).fetchone()
         assert row is not None
         return self._to_model(row)
+
+    def request_cancel(
+        self, task_id: int, requested_by: str | None = None
+    ) -> tuple[TaskRead, Event | None]:
+        """Record a cancellation request before attempting cooperative cleanup."""
+
+        terminal_statuses = {
+            TaskStatus.SUCCEEDED.value,
+            TaskStatus.PARTIAL.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+            TaskStatus.INTERRUPTED.value,
+        }
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM workspace_tasks WHERE lab_id = ? AND id = ?",
+                (self.lab_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Tarefa {task_id} não encontrada.")
+            if row["status"] in terminal_statuses or row["cancel_requested"]:
+                return self._to_model(row), None
+            now = utc_now()
+            connection.execute(
+                "UPDATE workspace_tasks SET cancel_requested = 1, "
+                "cancel_requested_at = ?, cancel_requested_by = ?, updated_at = ? "
+                "WHERE lab_id = ? AND id = ?",
+                (now, requested_by, now, self.lab_id, task_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM workspace_tasks WHERE lab_id = ? AND id = ?",
+                (self.lab_id, task_id),
+            ).fetchone()
+            assert updated is not None
+            task = self._to_model(updated)
+            event = Event(
+                event_type="TASK_CANCEL_REQUESTED",
+                message=f"Task {task.id} cancellation requested",
+                entity_type="task",
+                entity_id=task.id,
+                payload={"kind": task.kind, "status": task.status.value},
+            )
+            self._insert_event(connection, event)
+        return task, event
 
     def get(self, task_id: int) -> TaskRead | None:
         with self.database.connection() as connection:
@@ -214,4 +260,5 @@ class TaskRepository:
     def _to_model(row: sqlite3.Row) -> TaskRead:
         raw = dict(row)
         raw["result"] = json.loads(raw.pop("result_json") or "{}")
+        raw["cancel_requested"] = bool(raw.get("cancel_requested", 0))
         return TaskRead.model_validate(raw)
